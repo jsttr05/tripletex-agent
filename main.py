@@ -149,7 +149,7 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
   - Send invoice:   PUT /invoice/{id}/:send?sendType=EMAIL (sendType required: EMAIL, EHF, AVTALEGIRO, or PAPER)
   - Payment:        PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X (NOT POST, query params)
   - Credit note:    PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD (NOT POST)
-  - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params
+  - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params; invoiceDateTo must be at least 1 day AFTER invoiceDateFrom
   - Valid fields:   id, invoiceNumber, invoiceDate, invoiceDueDate, amount, amountExcludingVat, amountOutstanding, amountCurrency, customer, comment (NOT "status")
 - Travel expense: GET/POST /travelExpense,    DELETE /travelExpense/{id}
 - Projects:       GET/POST /project,          PUT /project/{id}
@@ -223,13 +223,18 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 **Free accounting dimension** (POST /ledger/accountingDimensionName):
 - dimensionName: "string" (the name, e.g. "Prosjekttype")
 - active: true
-- Tripletex supports exactly 3 dimension slots (index 1, 2, 3) — check existing ones first with GET /ledger/accountingDimensionName
+- Tripletex supports exactly 3 dimension slots (index 1, 2, 3) — check existing ones first with GET /ledger/accountingDimensionName to find which dimensionIndex is assigned
 
 **Dimension value** (POST /ledger/accountingDimensionValue):
-- dimensionIndex: 1, 2, or 3 (which dimension this belongs to)
+- dimensionIndex: 1, 2, or 3 (must match the dimensionIndex of the parent dimension)
 - displayName: "string" (the value name, e.g. "Internt")
 - active: true
 - showInVoucherRegistration: true
+
+**Referencing dimension values in voucher postings:**
+Use freeAccountingDimension1, freeAccountingDimension2, or freeAccountingDimension3 in each posting:
+{"freeAccountingDimension1": {"id": <value_id>}}
+The number (1/2/3) must match the dimensionIndex of the value.
 
 **Project** (POST /project):
 - name (required)
