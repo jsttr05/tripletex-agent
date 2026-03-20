@@ -251,7 +251,7 @@ The number (1/2/3) must match the dimensionIndex of the value.
 ## Important rules
 - Always use the tools — never make up data or pretend to call APIs
 - Dates must be in format YYYY-MM-DD
-- Norwegian VAT id is always 3 (25%) — never call /vatType to look it up
+- Norwegian VAT id is ALWAYS 3 (25%) — NEVER call /vatType, /product/vatType, or any vatType endpoint. Use {"id": 3} directly. This is hardcoded and will never change.
 - When looking up resources, use search params like ?firstName=X&lastName=Y or ?name=X to find by name
 - Use ?fields=id,name (or relevant fields) to limit response size
 - Currency codes: NOK, EUR, USD, etc. Default to NOK if not specified
@@ -378,7 +378,7 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             except httpx.HTTPStatusError as e:
                 error_body = e.response.text
                 logger.error(f"API error {e.response.status_code}: {error_body}")
-                if e.response.status_code == 403:
+                if e.response.status_code == 403 and "Invalid or expired token" in error_body:
                     logger.error("Session token expired or invalid — aborting")
                     return "completed"
                 tool_results.append({
