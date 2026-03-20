@@ -141,7 +141,10 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Employees:      GET/POST /employee,         PUT /employee/{id}
 - Customers:      GET/POST /customer,         PUT /customer/{id}
 - Products:       GET/POST /product,          PUT /product/{id}
-- Invoices:       GET/POST /invoice,          PUT /invoice/{id}
+- Orders:         GET/POST /order,            PUT /order/{id}
+  - Add line:       POST /order/orderline
+  - To invoice:     PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
+- Invoices:       GET /invoice,              PUT /invoice/{id}
   - Send invoice:   PUT /invoice/{id}/:send
   - Payment:        POST /invoice/{id}/payment
   - Credit note:    POST /invoice/{id}/:createCreditNote
@@ -150,6 +153,12 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Departments:    GET/POST /department,       PUT /department/{id}
 - Accounts:       GET /ledger/account
 - Vouchers:       POST /ledger/voucher
+
+## CRITICAL: How to create an invoice
+NEVER use POST /invoice directly. The correct flow is:
+1. POST /order with: {"customer": {"id": X}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD"}
+2. POST /order/orderline with: {"order": {"id": <order_id>}, "description": "...", "count": 1, "unitPriceExcludingVatCurrency": X, "vatType": {"id": 3}}
+3. PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD (pass dates as query params, no body needed)
 
 ## Required fields per resource type
 
@@ -167,26 +176,42 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - address if street/city/zip given: {"physicalAddress": {"addressLine1": "...", "city": "...", "postCode": "...", "country": {"id": 161}}} (161 = Norway)
 
 **Product** (POST /product):
-- name, costExcludingVatCurrency, priceExcludingVatCurrency (required)
-- vatType: {"id": 3} for standard 25% Norwegian VAT
+- name (required)
+- priceExcludingVatCurrency (required, the sales price)
+- costExcludingVatCurrency (if provided)
+- number (product number, if provided)
+- vatType: {"id": 3} for standard 25% Norwegian VAT — do NOT look this up, always use id 3
 
-**Invoice** (POST /invoice):
-- customer: {"id": <id>}, invoiceDate (YYYY-MM-DD), dueDate (YYYY-MM-DD)
-- orders: [{"id": <order_id>}] OR orderLines directly
-- Each order line needs: description OR product.id, count, unitPriceExcludingVatCurrency
+**Order** (POST /order):
+- customer: {"id": <id>} (required)
+- orderDate: "YYYY-MM-DD" (required)
+- deliveryDate: "YYYY-MM-DD"
+
+**Order line** (POST /order/orderline):
+- order: {"id": <order_id>}
+- description or product: {"id": <product_id>}
+- count: number of units
+- unitPriceExcludingVatCurrency: price per unit
+- vatType: {"id": 3}
 
 **Payment** (POST /invoice/{id}/payment):
 - paymentDate (YYYY-MM-DD), amount, paymentTypeId: 1
 
-**Travel expense** (POST /travelExpense):
-- employee: {"id": <id>}, travelDetails (description), startDate, endDate
+**Project** (POST /project):
+- name (required)
+- number (project number, if provided)
+- startDate (YYYY-MM-DD)
+- customer: {"id": <id>} (if mentioned)
+- projectManager: {"id": <employee_id>} (if mentioned)
+- fixedprice: amount (if fixed price mentioned)
+- isPriceCeiling: true (if fixed price / price ceiling mentioned)
 
 ## Important rules
 - Always use the tools — never make up data or pretend to call APIs
 - Dates must be in format YYYY-MM-DD
-- Norwegian VAT code for standard goods/services: 3 (25%)
+- Norwegian VAT id is always 3 (25%) — never call /vatType to look it up
 - When looking up resources, use search params like ?firstName=X&lastName=Y or ?name=X to find by name
-- Use ?fields=id,name (or relevant fields) to limit response size when you only need specific fields
+- Use ?fields=id,name (or relevant fields) to limit response size
 - Currency codes: NOK, EUR, USD, etc. Default to NOK if not specified
 - Always GET to confirm a resource exists before trying to update/delete it
 - If a task mentions a role (administrator, user, etc.), always set it — it is heavily weighted in scoring
@@ -195,9 +220,10 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 ## Efficiency
 - Minimize total API calls — only GET data you actually need
 - Use ?fields= to fetch only needed fields
-- Combine data in one request where possible (use query params to filter)
-- Don't make exploratory calls unless truly necessary
+- Combine lookups where possible using query params to filter
+- Do NOT make exploratory or speculative calls
 - Avoid 4xx errors — plan your calls correctly before executing
+- Do NOT look up vatType, currency, or other static data — use known values directly
 
 When you are done, say DONE. Do not ask for confirmation — just complete the task."""
 
