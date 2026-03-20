@@ -235,6 +235,12 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 - Do NOT make exploratory or speculative calls
 - Avoid 4xx errors — plan your calls correctly before executing
 - Do NOT look up vatType, currency, or other static data — use known values directly
+- You can make MULTIPLE tool calls in a single turn — do this for independent lookups (e.g. fetch customer and employee at the same time)
+
+## How to approach each task
+1. THINK first — read the full prompt and write out your plan as text: what resources need to be created/modified, in what order, what data you already have vs need to look up
+2. EXECUTE the plan — make all independent lookups in parallel (multiple tool calls per turn)
+3. COMPLETE dependent steps sequentially using results from previous calls
 
 When you are done, say DONE. Do not ask for confirmation — just complete the task."""
 
@@ -273,7 +279,7 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
 
     messages = [{"role": "user", "content": user_content}]
 
-    max_iterations = 30
+    max_iterations = 15
     for iteration in range(max_iterations):
         logger.info(f"Agent iteration {iteration + 1}")
 
@@ -333,6 +339,9 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             except httpx.HTTPStatusError as e:
                 error_body = e.response.text
                 logger.error(f"API error {e.response.status_code}: {error_body}")
+                if e.response.status_code == 403:
+                    logger.error("Session token expired or invalid — aborting")
+                    return "completed"
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
