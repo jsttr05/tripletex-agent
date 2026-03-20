@@ -204,7 +204,9 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 - vatType: {"id": 3}
 
 **Payment** (POST /invoice/{id}/payment):
-- paymentDate (YYYY-MM-DD), amount, paymentTypeId: 1
+- Use POST with JSON body (NOT PUT, NOT query params)
+- Body: {"paymentDate": "YYYY-MM-DD", "amount": X, "paymentTypeId": 1}
+- paymentTypeId 1 = bank transfer (default), 2 = other
 
 **Project** (POST /project):
 - name (required)
@@ -276,7 +278,7 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
         logger.info(f"Agent iteration {iteration + 1}")
 
         response = await anthropic_client.messages.create(
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
             max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=tools,
