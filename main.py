@@ -148,7 +148,8 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Invoices:       GET /invoice,              PUT /invoice/{id}
   - Send invoice:   PUT /invoice/{id}/:send
   - Payment:        POST /invoice/{id}/payment
-  - Credit note:    POST /invoice/{id}/:createCreditNote
+  - Credit note:    PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD (NOT POST)
+  - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params
 - Travel expense: GET/POST /travelExpense,    DELETE /travelExpense/{id}
 - Projects:       GET/POST /project,          PUT /project/{id}
 - Departments:    GET/POST /department,       PUT /department/{id}
@@ -236,6 +237,7 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 - projectManager: {"id": <employee_id>} (if mentioned)
 - fixedprice: amount (if fixed price mentioned)
 - isPriceCeiling: true (if fixed price / price ceiling mentioned)
+- NOTE: if task only says "set fixed price on project", just GET the project then PUT with fixedprice — do NOT create orders or invoices
 
 ## Important rules
 - Always use the tools — never make up data or pretend to call APIs
