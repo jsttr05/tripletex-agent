@@ -146,16 +146,18 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
   - Add line:       POST /order/orderline
   - To invoice:     PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
 - Invoices:       GET /invoice,              PUT /invoice/{id}
-  - Send invoice:   PUT /invoice/{id}/:send
-  - Payment:        POST /invoice/{id}/payment
+  - Send invoice:   PUT /invoice/{id}/:send?sendType=EMAIL (sendType required: EMAIL, EHF, AVTALEGIRO, or PAPER)
+  - Payment:        PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X (NOT POST, query params)
   - Credit note:    PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD (NOT POST)
   - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params
+  - Valid fields:   id, invoiceNumber, invoiceDate, invoiceDueDate, amount, amountExcludingVat, amountOutstanding, amountCurrency, customer, comment (NOT "status")
 - Travel expense: GET/POST /travelExpense,    DELETE /travelExpense/{id}
 - Projects:       GET/POST /project,          PUT /project/{id}
 - Departments:    GET/POST /department,       PUT /department/{id}
 - Accounts:       GET /ledger/account
 - Vouchers:       POST /ledger/voucher (fields: date, description, postings[{account,customer/supplier,amount,description}])
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
+- Salary/payroll:  GET/POST /salary/payslip, GET/POST /salary/transaction
 
 ## How to create an invoice
 Two valid flows:
@@ -213,10 +215,10 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 - unitPriceExcludingVatCurrency: price per unit
 - vatType: {"id": 3}
 
-**Payment** (POST /invoice/{id}/payment):
-- Use POST with JSON body (NOT PUT, NOT query params)
-- Body: {"paymentDate": "YYYY-MM-DD", "amount": X, "paymentTypeId": 1}
-- paymentTypeId 1 = bank transfer (default), 2 = other
+**Payment** (PUT /invoice/{id}/:payment):
+- Use PUT with QUERY PARAMS: ?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X
+- paymentTypeId 1 = bank transfer (default)
+- paidAmount = the amount being paid (full outstanding amount unless partial)
 
 **Free accounting dimension** (POST /ledger/accountingDimensionName):
 - dimensionName: "string" (the name, e.g. "Prosjekttype")
