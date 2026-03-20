@@ -154,11 +154,20 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Accounts:       GET /ledger/account
 - Vouchers:       POST /ledger/voucher
 
-## CRITICAL: How to create an invoice
-NEVER use POST /invoice directly. The correct flow is:
-1. POST /order with: {"customer": {"id": X}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD"}
-2. POST /order/orderline with: {"order": {"id": <order_id>}, "description": "...", "count": 1, "unitPriceExcludingVatCurrency": X, "vatType": {"id": 3}}
-3. PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD (pass dates as query params, no body needed)
+## How to create an invoice
+Two valid flows:
+
+**Flow A — via order (preferred):**
+1. POST /order: {"customer": {"id": X}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD"}
+2. POST /order/orderline: {"order": {"id": <order_id>}, "description": "...", "count": 1, "unitPriceExcludingVatCurrency": X, "vatType": {"id": 3}}
+3. POST /invoice: {"invoiceDate": "YYYY-MM-DD", "invoiceDueDate": "YYYY-MM-DD", "customer": {"id": X}, "orders": [{"id": <order_id>}]}
+
+**Flow B — convert order directly:**
+1. POST /order (same as above)
+2. POST /order/orderline (same as above)
+3. PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
+
+IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NOT "dueDate". Do not include extra fields like "project", "invoiceOnAccountVatHigh", etc.
 
 ## Required fields per resource type
 
@@ -267,7 +276,7 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
         logger.info(f"Agent iteration {iteration + 1}")
 
         response = await anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-6",
             max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=tools,
