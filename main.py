@@ -140,6 +140,7 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 ## Key Tripletex API paths
 - Employees:      GET/POST /employee,         PUT /employee/{id}
 - Customers:      GET/POST /customer,         PUT /customer/{id}
+- Suppliers:      GET/POST /supplier,         PUT /supplier/{id}
 - Products:       GET/POST /product,          PUT /product/{id}
 - Orders:         GET/POST /order,            PUT /order/{id}
   - Add line:       POST /order/orderline
@@ -152,7 +153,7 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Projects:       GET/POST /project,          PUT /project/{id}
 - Departments:    GET/POST /department,       PUT /department/{id}
 - Accounts:       GET /ledger/account
-- Vouchers:       POST /ledger/voucher
+- Vouchers:       POST /ledger/voucher (fields: date, description, postings[{account,customer/supplier,amount,description}])
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
 
 ## How to create an invoice
@@ -184,6 +185,13 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 - isCustomer: true (always include)
 - email, phoneNumber, organizationNumber (if provided)
 - address if street/city/zip given: {"physicalAddress": {"addressLine1": "...", "city": "...", "postCode": "...", "country": {"id": 161}}} (161 = Norway)
+
+**Supplier** (POST /supplier):
+- name (required)
+- isSupplier: true (always include)
+- organizationNumber (if provided)
+- email, phoneNumber (if provided)
+- IMPORTANT: use /supplier for "leverandør/lieferant/proveedor/fornecedor/supplier" — NEVER use /customer for a supplier
 
 **Product** (POST /product):
 - name (required)
