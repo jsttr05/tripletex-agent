@@ -153,6 +153,7 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Departments:    GET/POST /department,       PUT /department/{id}
 - Accounts:       GET /ledger/account
 - Vouchers:       POST /ledger/voucher
+- Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
 
 ## How to create an invoice
 Two valid flows:
@@ -207,6 +208,17 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 - Use POST with JSON body (NOT PUT, NOT query params)
 - Body: {"paymentDate": "YYYY-MM-DD", "amount": X, "paymentTypeId": 1}
 - paymentTypeId 1 = bank transfer (default), 2 = other
+
+**Free accounting dimension** (POST /ledger/accountingDimensionName):
+- dimensionName: "string" (the name, e.g. "Prosjekttype")
+- active: true
+- Tripletex supports exactly 3 dimension slots (index 1, 2, 3) — check existing ones first with GET /ledger/accountingDimensionName
+
+**Dimension value** (POST /ledger/accountingDimensionValue):
+- dimensionIndex: 1, 2, or 3 (which dimension this belongs to)
+- displayName: "string" (the value name, e.g. "Internt")
+- active: true
+- showInVoucherRegistration: true
 
 **Project** (POST /project):
 - name (required)
