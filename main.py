@@ -14,12 +14,19 @@ app = FastAPI(title="Tripletex AI Accounting Agent")
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
+class TripletexCredentials(BaseModel):
+    base_url: str
+    session_token: str
+
 class SolveRequest(BaseModel):
     prompt: str
-    proxy_url: str          # e.g. "https://proxy.ainm.no/tripletex"
-    session_token: str      # Tripletex session token
-    company_id: int = 0     # Tripletex companyId (0 = your own company)
-    attachments: Optional[list] = None  # [{filename, base64, mime_type}]
+    tripletex_credentials: Optional[TripletexCredentials] = None
+    # legacy fields for local testing
+    proxy_url: Optional[str] = None
+    session_token: Optional[str] = None
+    company_id: int = 0
+    attachments: Optional[list] = None
+    files: Optional[list] = None  # platform uses "files" not "attachments"
 
 class SolveResponse(BaseModel):
     status: str             # "completed" or "failed"
@@ -311,27 +318,46 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
-@app.post("/solve", response_model=SolveResponse)
-async def solve(request: SolveRequest):
-    """Main endpoint — receives task, runs agent, returns status."""
+async def handle_solve(request: SolveRequest) -> SolveResponse:
     logger.info(f"Received task: {request.prompt[:100]}")
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set")
 
+    # Support both platform format (tripletex_credentials) and legacy format (proxy_url)
+    if request.tripletex_credentials:
+        proxy_url = request.tripletex_credentials.base_url
+        session_token = request.tripletex_credentials.session_token
+    else:
+        proxy_url = request.proxy_url
+        session_token = request.session_token
+
+    if not proxy_url or not session_token:
+        raise HTTPException(status_code=400, detail="Missing Tripletex credentials")
+
     tripletex = TripletexClient(
-        proxy_url=request.proxy_url,
-        session_token=request.session_token,
+        proxy_url=proxy_url,
+        session_token=session_token,
         company_id=request.company_id,
     )
+
+    attachments = request.files or request.attachments
 
     status = await run_agent(
         prompt=request.prompt,
         client=tripletex,
-        attachments=request.attachments,
+        attachments=attachments,
     )
 
     return SolveResponse(status=status)
+
+@app.post("/solve", response_model=SolveResponse)
+async def solve(request: SolveRequest):
+    return await handle_solve(request)
+
+@app.post("/", response_model=SolveResponse)
+async def solve_root(request: SolveRequest):
+    return await handle_solve(request)
 
 @app.get("/health")
 async def health():
