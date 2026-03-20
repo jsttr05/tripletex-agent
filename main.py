@@ -63,6 +63,8 @@ class TripletexClient:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.put(self._url(path), headers=self.headers, auth=self.auth, json=body)
             r.raise_for_status()
+            if r.status_code == 204 or not r.content:
+                return {"success": True}
             return r.json()
 
     async def delete(self, path: str) -> dict:
@@ -146,8 +148,8 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
   - Add line:       POST /order/orderline
   - To invoice:     PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
 - Invoices:       GET /invoice,              PUT /invoice/{id}
-  - Send invoice:   PUT /invoice/{id}/:send?sendType=EMAIL (sendType required: EMAIL, EHF, AVTALEGIRO, or PAPER)
-  - Payment:        PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X (NOT POST, query params)
+  - Send invoice:   PUT /invoice/{id}/:send?sendType=EMAIL (sendType required: EMAIL, EHF, AVTALEGIRO, or PAPER). Returns 204 No Content on success.
+  - Payment:        Invoice MUST be sent before payment can be registered. Flow: send first, then PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X
   - Credit note:    PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD (NOT POST)
   - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params; invoiceDateTo must be at least 1 day AFTER invoiceDateFrom
   - Valid fields:   id, invoiceNumber, invoiceDate, invoiceDueDate, amount, amountExcludingVat, amountOutstanding, amountCurrency, customer, comment (NOT "status")
