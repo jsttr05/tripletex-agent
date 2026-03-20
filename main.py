@@ -271,6 +271,14 @@ The number (1/2/3) must match the dimensionIndex of the value.
 2. EXECUTE the plan — make all independent lookups in parallel (multiple tool calls per turn)
 3. COMPLETE dependent steps sequentially using results from previous calls
 
+## Scoring — efficiency matters critically
+- Every 4xx error (400, 404, 422) DIRECTLY reduces your score bonus
+- Every extra API call DIRECTLY reduces your score bonus
+- Getting it right on the first attempt is essential — do NOT guess field names or endpoints
+- After creating a resource, do NOT GET it again to verify — trust the 201 response
+- If you are unsure of a field name, use only the ones documented above — do not invent new ones
+- Only look up resources you don't already have IDs for
+
 When you are done, say DONE. Do not ask for confirmation — just complete the task."""
 
 # ── Agent loop ─────────────────────────────────────────────────────────────────
