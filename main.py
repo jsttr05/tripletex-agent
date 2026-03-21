@@ -153,12 +153,13 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
   - Payment:        Invoice MUST be sent before payment can be registered. Flow: send first, then PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X
   - Credit note:    PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD (NOT POST)
   - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params; invoiceDateTo must be at least 1 day AFTER invoiceDateFrom
+  - To find overdue invoices: ONE call: GET /invoice?invoiceDateFrom=2020-01-01&invoiceDateTo=2026-12-31&fields=id,invoiceNumber,invoiceDate,invoiceDueDate,amountOutstanding,customer — then filter locally for amountOutstanding > 0 and invoiceDueDate < today. Do NOT make multiple narrow date-range searches.
   - Valid fields:   id, invoiceNumber, invoiceDate, invoiceDueDate, amount, amountExcludingVat, amountOutstanding, amountCurrency, customer, comment (NOT "status")
 - Travel expense: GET/POST /travelExpense,    DELETE /travelExpense/{id}
 - Projects:       GET/POST /project,          PUT /project/{id}
 - Departments:    GET/POST /department,       PUT /department/{id}
 - Accounts:       GET /ledger/account
-- Vouchers:       POST /ledger/voucher (fields: date, description, postings[{account,customer/supplier,amount,description}])
+- Vouchers:       POST /ledger/voucher — see posting rules below
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
 - Salary/payroll:  See full flow below — DO NOT use /ledger/voucher for salary tasks
 
@@ -259,6 +260,40 @@ The number (1/2/3) must match the dimensionIndex of the value.
 - fixedprice: amount (if fixed price mentioned)
 - isPriceCeiling: true (if fixed price / price ceiling mentioned)
 - NOTE: if task only says "set fixed price on project", just GET the project then PUT with fixedprice — do NOT create orders or invoices
+
+## How to book a late fee / reminder fee (purregebyr / inkassogebyr)
+
+The correct approach is to create a new invoice for the fee — do NOT attempt a standalone voucher for this.
+
+1. Find the overdue invoice → get the customer id from it (one search call, wide date range)
+2. POST /order: {"customer": {"id": <cust_id>}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD"}
+3. POST /order/orderline: {"order": {"id": <order_id>}, "description": "Purregebyr", "count": 1, "unitPriceExcludingVatCurrency": <amount>, "vatType": {"id": 3}}
+4. PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
+
+## How to create a voucher (bilag) correctly
+
+POST /ledger/voucher body:
+```
+{
+  "date": "YYYY-MM-DD",
+  "description": "...",
+  "postings": [
+    {
+      "date": "YYYY-MM-DD",
+      "description": "...",
+      "account": {"id": <account_id>},
+      "amountGross": <amount>,
+      "amountGrossCurrency": <amount>
+    },
+    ... (balancing entry)
+  ]
+}
+```
+Rules:
+- `amountGross` MUST equal `amountGrossCurrency` for NOK — they must be identical numbers
+- Do NOT include a posting with guiRow=0 — Tripletex auto-generates the balancing row
+- Postings must balance: debits equal credits (use positive for debit, negative for credit)
+- Typical accounts: 1500 = Accounts receivable, 3000 = Sales income, 8070 = Interest income, 7770 = Late fee income
 
 ## How to run payroll (kjør lønn)
 
