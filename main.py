@@ -253,11 +253,36 @@ Step 2 — POST /employee/employment (if task mentions start date or employment 
 - unitPriceExcludingVatCurrency: price per unit
 - vatType: {"id": 3}
 
-**Payment** (PUT /invoice/{id}/:payment):
-- Use PUT with QUERY PARAMS: ?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X
-- paymentTypeId 1 = bank transfer (default)
-- paidAmount = use amountOutstanding from the invoice (do NOT calculate from exchange rate or VAT — always read amountOutstanding directly from the invoice response)
-- If :payment returns 404, stop — do NOT retry with different params. Report and stop.
+**Payment registration — use /ledger/voucher, NOT /:payment**
+`PUT /invoice/{id}/:payment` is NOT a valid action — it does not exist and returns 404. Do NOT use it.
+
+To register an incoming payment against a customer invoice, post a balanced voucher:
+```json
+POST /ledger/voucher
+{
+  "date": "YYYY-MM-DD",
+  "description": "Innbetaling faktura <invoiceNumber>",
+  "postings": [
+    {
+      "date": "YYYY-MM-DD",
+      "account": {"id": <bank_account_id>},
+      "amount": <payment_amount>,
+      "description": "Innbetaling faktura <invoiceNumber>"
+    },
+    {
+      "date": "YYYY-MM-DD",
+      "account": {"id": <accounts_receivable_id>},
+      "amount": <negative_payment_amount>,
+      "description": "Innbetaling faktura <invoiceNumber>",
+      "customer": {"id": <customer_id>}
+    }
+  ]
+}
+```
+- Debit bank account (typically 1920) with positive amount
+- Credit accounts receivable (typically 1500) with negative amount
+- Include customer reference in the receivable posting
+- Typical bank account IDs: look up "1920" in /ledger/account; typical AR account: "1500"
 
 **Free accounting dimension** (POST /ledger/accountingDimensionName):
 - dimensionName: "string" (the name, e.g. "Prosjekttype")
@@ -410,17 +435,26 @@ If step 3 returns 500, it may still have been processed — check GET /salary/tr
 - Do NOT call /vatType, /product/vatType, /ledger/vatType, or any endpoint containing "vatType"
 - Any call to a vatType endpoint is a guaranteed 4xx error and a score penalty
 
+**SCOPE GUARD — only take actions explicitly requested in the task.**
+Before every POST, PUT, or DELETE, ask yourself: "Did the task description explicitly ask for this action?"
+- If YES: proceed.
+- If NO or UNCLEAR: describe what you would do and stop — do NOT proceed automatically.
+- Sending emails to customers (/:send), posting ledger entries, creating records, and deleting data that are not explicitly mentioned in the task are FORBIDDEN.
+- This is especially critical for irreversible actions: sending emails, posting vouchers, and modifying financial records cannot be undone.
+- Example: a task asking to "match payments" or "reconcile" must NOT send invoices to customers. A task asking to "analyse" must NOT create any records.
+
 **NEVER RETRY THE SAME ENDPOINT AFTER 404.**
 - A 404 means the resource or action does not exist in its current state — changing the date, amount, or paymentTypeId will NOT fix it
-- If an action endpoint (e.g. :payment, :send) returns 404, stop and report — do NOT try again with different parameters
+- If an action endpoint returns 404, stop and report — do NOT try again with different parameters
 
 **UNRECOVERABLE ERRORS: Do not retry after these 422 errors.**
 - "bank account not registered" → this blocks ALL invoice creation paths. Do NOT retry with POST /invoice, PUT /order/{id}/:invoice, or any other invoice endpoint. Report and stop immediately.
 - "company setup required" type errors → report and stop immediately
 
-**INVOICE ACTION PATHS: Only three valid actions exist on invoices.**
-- Valid: `:send`, `:payment`, `:createCreditNote` — these are the ONLY valid action paths
-- Do NOT guess or invent others (e.g. `:reversePayment`, `:cancel`, `:reverse` — these do not exist and will 404)
+**INVOICE ACTION PATHS: Only two valid actions exist on invoices.**
+- Valid: `:send`, `:createCreditNote` — these are the ONLY valid action paths
+- `:payment` does NOT exist — use /ledger/voucher for payment registration (see above)
+- Do NOT guess or invent others (e.g. `:reversePayment`, `:cancel`, `:reverse`, `:payment` — these do not exist and will 404)
 - `PUT /invoice/{id}/:createCreditNote` REQUIRES `?date=YYYY-MM-DD` as a query param — omitting it causes 422
 
 **Reversing, cancelling, or crediting an invoice — always use `:createCreditNote`.**
@@ -464,7 +498,7 @@ Do NOT give up or report that it is impossible — always proceed with `:createC
 - Do NOT look up vatType, currency, or other static data — use known values directly
 - You can make MULTIPLE tool calls in a single turn — do this for ALL independent operations (lookups AND writes)
 - When fetching /ledger/account, fetch ONCE with ?fields=id,number,name&count=300 — do NOT paginate across multiple calls
-- NEVER request /ledger/account more than once per task — the full account list is in your context after the first fetch. Any repeat request returns only a short cache notice (not the data), wastes an iteration, and burns rate limit tokens. If you already have the account list, find the account number in it directly — do NOT call /ledger/account again.
+- NEVER request /ledger/account more than once per task. You already have the full account list in your context. Any repeat call returns only a short warning (not the data) and wastes an iteration. If you find yourself about to call /ledger/account again, STOP — instead decide what action to take next based on the account data you already have.
 
 ## How to approach each task
 1. THINK first — read the full prompt and write out your plan as text: what resources need to be created/modified, in what order, what data you already have vs need to look up
@@ -659,19 +693,27 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             try:
                 if tool_name == "tripletex_get":
                     # Cache the full account list — only for the list endpoint (not /ledger/account/{id}).
-                    # On a cache hit return a short reminder instead of the full 8000-char payload;
-                    # the data is already in the message history and re-injecting it each turn
-                    # balloons the input token count and triggers the 30k token/min rate limit.
+                    # On a cache hit return a short warning; re-injecting 8000 chars every iteration
+                    # balloons input tokens and triggers the 30k token/min rate limit.
                     if _is_account_list and "/ledger/account" in account_cache:
-                        logger.info("Returning short cache-hit notice for /ledger/account")
+                        account_cache["_hit_count"] = str(int(account_cache.get("_hit_count", "0")) + 1)
+                        logger.warning(f"SCOPE: agent requested /ledger/account again (hit #{account_cache['_hit_count']}) — returning warning only")
                         return {
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
-                            "content": "[Account list already fetched — full data is in your earlier tool result. Do not request again. Use the account numbers and IDs already retrieved.]",
+                            "content": (
+                                "[STOP: You have already fetched the account list. It is in your context. "
+                                "Do NOT call /ledger/account again. Look up the account in the data you already have "
+                                "and proceed with the next action in your plan.]"
+                            ),
                         }
                     result = await client.get(path, tool_input.get("params", {}))
                 elif tool_name == "tripletex_post":
                     body = tool_input["body"]
+                    # Redirect /incomingInvoice → /supplierInvoice (correct endpoint).
+                    if path == "/incomingInvoice":
+                        logger.warning("REDIRECT: /incomingInvoice → /supplierInvoice (correct endpoint)")
+                        path = "/supplierInvoice"
                     # Strip system-generated row 0 from voucher postings before sending.
                     # Tripletex always rejects postings with row=0 or guiRow=0 with a 422.
                     if path == "/ledger/voucher" and isinstance(body.get("postings"), list):
@@ -685,7 +727,14 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                             logger.info(f"Stripped {stripped} row-0 posting(s) from /ledger/voucher body")
                     result = await client.post(path, body)
                 elif tool_name == "tripletex_put":
-                    result = await client.put(path, tool_input["body"])
+                    put_path = path
+                    put_body = tool_input["body"]
+                    # Auto-inject sendType=EMAIL on /:send if missing — this error appears in every run.
+                    if "/:send" in put_path and "sendType" not in put_path:
+                        logger.warning(f"AUTO-INJECT: sendType=EMAIL added to {put_path}")
+                        sep = "&" if "?" in put_path else "?"
+                        put_path = put_path + sep + "sendType=EMAIL"
+                    result = await client.put(put_path, put_body)
                 elif tool_name == "tripletex_delete":
                     result = await client.delete(path)
                 else:
@@ -779,25 +828,41 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
 
     attachments = request.files or request.attachments
 
-    # Timeout heuristic: complex/analytical tasks get 300s, others get 240s.
-    # AGENT_TIMEOUT_SECONDS env var overrides both.
+    # Complexity classifier — determines timeout (300s vs 240s).
+    # Structure-based heuristics first, then multilingual keyword fallback.
+    # AGENT_TIMEOUT_SECONDS env var overrides everything.
     _COMPLEX_KEYWORDS = {
-        "analyse", "analysere", "analysieren", "analyze",
-        "finn", "gå gjennom", "compare", "vergleich",
-        "errors", "feil", "audit", "review", "søk", "search",
-        # Norwegian accounting / year-end terms
+        # English
+        "analyse", "analyze", "reconcil", "compare", "match", "audit", "review",
+        "search", "find error", "go through", "report", "errors", "date range",
+        # Norwegian
+        "analysere", "avstemm", "finn", "gå gjennom", "sammenlign", "feil",
         "årsoppgjør", "avskrivning", "avskrivninger", "bokfør", "bokføring",
         "regnskap", "balanse", "resultat", "årsregnskap", "depreciati",
-        "bilag", "periode", "kvartal", "årlig",
-        # French accounting terms
+        "bilag", "periode", "kvartal", "årlig", "søk",
+        # German
+        "analysieren", "vergleich", "abstimm", "prüf", "durchgeh", "fehler",
+        # French
         "clôture", "amortissement", "amortissements", "comptabilisez", "comptabiliser",
-        "immobilisation", "extourne", "provision", "bénéfice", "annuelle",
+        "immobilisation", "extourne", "provision", "bénéfice", "annuelle", "rapproch",
     }
     prompt_lower = request.prompt.lower()
-    is_complex = any(kw in prompt_lower for kw in _COMPLEX_KEYWORDS)
+    has_attachment = bool(attachments)
+    # Multi-action: more than one numbered step, bullet, or semicolon-separated clause
+    has_multiple_actions = (
+        prompt_lower.count("\n") > 2
+        or any(f"{n})" in prompt_lower for n in range(2, 6))
+        or prompt_lower.count(";") >= 2
+    )
+    keyword_match = any(kw in prompt_lower for kw in _COMPLEX_KEYWORDS)
+    is_complex = has_attachment or has_multiple_actions or keyword_match
+    reason = []
+    if has_attachment:   reason.append("attachment")
+    if has_multiple_actions: reason.append("multi-action")
+    if keyword_match:    reason.append("keyword")
     default_timeout = 300 if is_complex else 240
     timeout_seconds = int(os.environ.get("AGENT_TIMEOUT_SECONDS", str(default_timeout)))
-    logger.info(f"Agent timeout: {timeout_seconds}s (complex={is_complex})")
+    logger.info(f"Agent timeout: {timeout_seconds}s (complex={is_complex}, reasons={reason})")
     try:
         status = await asyncio.wait_for(
             run_agent(
