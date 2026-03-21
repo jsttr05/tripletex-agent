@@ -395,7 +395,7 @@ Do NOT give up or report that it is impossible — always proceed with `:createC
 - Do NOT look up vatType, currency, or other static data — use known values directly
 - You can make MULTIPLE tool calls in a single turn — do this for ALL independent operations (lookups AND writes)
 - When fetching /ledger/account, fetch ONCE with ?fields=id,number,name&count=300 — do NOT paginate across multiple calls
-- NEVER request /ledger/account more than once per task — the full account list is in your context after the first fetch. Any repeat request wastes tokens and triggers rate limits. If you need a specific account, look it up in the data already retrieved.
+- NEVER request /ledger/account more than once per task — the full account list is in your context after the first fetch. Any repeat request returns only a short cache notice (not the data), wastes an iteration, and burns rate limit tokens. If you already have the account list, find the account number in it directly — do NOT call /ledger/account again.
 
 ## How to approach each task
 1. THINK first — read the full prompt and write out your plan as text: what resources need to be created/modified, in what order, what data you already have vs need to look up
@@ -540,7 +540,7 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             async with _anthropic_semaphore:
                 response = await anthropic_client.messages.create(
                     model="claude-sonnet-4-6",
-                    max_tokens=4096,
+                    max_tokens=8192,
                     system=SYSTEM_PROMPT,
                     tools=tools,
                     messages=messages,
@@ -720,6 +720,9 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
         "årsoppgjør", "avskrivning", "avskrivninger", "bokfør", "bokføring",
         "regnskap", "balanse", "resultat", "årsregnskap", "depreciati",
         "bilag", "periode", "kvartal", "årlig",
+        # French accounting terms
+        "clôture", "amortissement", "amortissements", "comptabilisez", "comptabiliser",
+        "immobilisation", "extourne", "provision", "bénéfice", "annuelle",
     }
     prompt_lower = request.prompt.lower()
     is_complex = any(kw in prompt_lower for kw in _COMPLEX_KEYWORDS)
