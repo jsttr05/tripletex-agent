@@ -179,12 +179,23 @@ IMPORTANT field names for invoice: use "invoiceDate" and "invoiceDueDate" — NO
 
 ## Required fields per resource type
 
-**Employee** (POST /employee):
+**Employee — 2-step process:**
+
+Step 1 — POST /employee (basic info only):
 - firstName, lastName (required)
 - email, phoneNumberMobile (if provided in task)
 - jobTitle (if provided)
+- dateOfBirth: "YYYY-MM-DD" (if provided)
+- userType: "STANDARD_WITHOUT_ACCESS" (ALWAYS include this — must not be 0 or empty; use STANDARD_WITHOUT_ACCESS unless task says otherwise)
+- department: {"id": <id>} — ALWAYS required. If not specified in task, GET /department first and use the first result
 - roles: if task mentions "administrator" or "admin", include {"roles": [{"name": "ROLE_ADMINISTRATOR"}]}
-- department: if mentioned, look up by name first and include {"department": {"id": <id>}}
+- DO NOT include startDate, employmentPeriodStart, or any employment date in this body — those go in step 2
+
+Step 2 — POST /employee/employment (if task mentions start date or employment details):
+- employee: {"id": <employee_id>} (from step 1 response)
+- startDate: "YYYY-MM-DD"
+- employmentType: "ORDINARY" (default)
+- remunerationType: "MONTHLY_WAGE" (default unless specified)
 
 **Customer** (POST /customer):
 - name (required)
@@ -260,9 +271,14 @@ The number (1/2/3) must match the dimensionIndex of the value.
 - "bank account not registered" → report and stop, do NOT try /invoice then /order/:invoice or vice versa
 - "company setup required" type errors → report and stop immediately
 
-**ORDERLINES: Post ALL lines in a single turn.**
-- If an order has N lines, make N parallel tripletex_post calls in the SAME turn
-- Never split orderline creation across multiple iterations
+**PUT /order/{id}/:invoice REQUIRES query params — missing them causes 422.**
+- ALWAYS use: PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
+- invoiceDate and invoiceDueDate are MANDATORY query parameters, never omit them
+
+**ORDERLINES: Post lines SEQUENTIALLY, one per turn.**
+- Tripletex uses optimistic locking on orders — posting multiple orderlines in parallel causes 409 RevisionException
+- Post each orderline one at a time, waiting for 201 before posting the next
+- Exception: lines for DIFFERENT orders can be parallelized
 
 ## Important rules
 - Always use the tools — never make up data or pretend to call APIs
@@ -285,7 +301,7 @@ The number (1/2/3) must match the dimensionIndex of the value.
 
 ## How to approach each task
 1. THINK first — read the full prompt and write out your plan as text: what resources need to be created/modified, in what order, what data you already have vs need to look up
-2. EXECUTE the plan — make ALL independent calls in parallel (multiple tool calls per turn), including parallel orderline POSTs
+2. EXECUTE the plan — make ALL independent calls in parallel (multiple tool calls per turn); orderlines for the same order must be sequential
 3. COMPLETE dependent steps sequentially using results from previous calls
 
 ## Scoring — efficiency matters critically
