@@ -665,7 +665,20 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 async def handle_solve(request: SolveRequest) -> SolveResponse:
-    logger.info(f"Received task: {request.prompt[:100]}")
+    # Log full prompt and attachment metadata so we can inspect tasks from container logs.
+    logger.info(f"TASK PROMPT: {request.prompt}")
+    attachments_meta = []
+    for att in (request.files or request.attachments or []):
+        attachments_meta.append({
+            "name": att.get("name", att.get("filename", "?")),
+            "mime_type": att.get("mime_type", att.get("type", "?")),
+            "keys": list(att.keys()),
+            "base64_len": len(att.get("base64", att.get("data", "")) or ""),
+        })
+    if attachments_meta:
+        logger.info(f"TASK ATTACHMENTS: {attachments_meta}")
+    else:
+        logger.info("TASK ATTACHMENTS: none")
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set")
