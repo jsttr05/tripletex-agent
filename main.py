@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import httpx
@@ -248,10 +249,24 @@ The number (1/2/3) must match the dimensionIndex of the value.
 - isPriceCeiling: true (if fixed price / price ceiling mentioned)
 - NOTE: if task only says "set fixed price on project", just GET the project then PUT with fixedprice — do NOT create orders or invoices
 
+## ABSOLUTE RULES — violations directly reduce your score
+
+**VAT TYPE: NEVER look up. NEVER call any vatType endpoint.**
+- vatType id for Norwegian 25% VAT is ALWAYS `{"id": 3}` — hardcoded, permanent, never changes
+- Do NOT call /vatType, /product/vatType, /ledger/vatType, or any endpoint containing "vatType"
+- Any call to a vatType endpoint is a guaranteed 4xx error and a score penalty
+
+**UNRECOVERABLE ERRORS: Do not retry after these 422 errors.**
+- "bank account not registered" → report and stop, do NOT try /invoice then /order/:invoice or vice versa
+- "company setup required" type errors → report and stop immediately
+
+**ORDERLINES: Post ALL lines in a single turn.**
+- If an order has N lines, make N parallel tripletex_post calls in the SAME turn
+- Never split orderline creation across multiple iterations
+
 ## Important rules
 - Always use the tools — never make up data or pretend to call APIs
 - Dates must be in format YYYY-MM-DD
-- Norwegian VAT id is ALWAYS 3 (25%) — NEVER call /vatType, /product/vatType, or any vatType endpoint. Use {"id": 3} directly. This is hardcoded and will never change.
 - When looking up resources, use search params like ?firstName=X&lastName=Y or ?name=X to find by name
 - Use ?fields=id,name (or relevant fields) to limit response size
 - Currency codes: NOK, EUR, USD, etc. Default to NOK if not specified
@@ -266,11 +281,11 @@ The number (1/2/3) must match the dimensionIndex of the value.
 - Do NOT make exploratory or speculative calls
 - Avoid 4xx errors — plan your calls correctly before executing
 - Do NOT look up vatType, currency, or other static data — use known values directly
-- You can make MULTIPLE tool calls in a single turn — do this for independent lookups (e.g. fetch customer and employee at the same time)
+- You can make MULTIPLE tool calls in a single turn — do this for ALL independent operations (lookups AND writes)
 
 ## How to approach each task
 1. THINK first — read the full prompt and write out your plan as text: what resources need to be created/modified, in what order, what data you already have vs need to look up
-2. EXECUTE the plan — make all independent lookups in parallel (multiple tool calls per turn)
+2. EXECUTE the plan — make ALL independent calls in parallel (multiple tool calls per turn), including parallel orderline POSTs
 3. COMPLETE dependent steps sequentially using results from previous calls
 
 ## Scoring — efficiency matters critically
@@ -345,18 +360,14 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             logger.warning(f"Unexpected stop reason: {response.stop_reason}")
             return "completed"
 
-        # Process tool calls
-        tool_results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
+        # Process tool calls — run all in parallel
+        tool_blocks = [b for b in response.content if b.type == "tool_use"]
 
+        async def execute_tool(block) -> dict:
             tool_name = block.name
             tool_input = block.input
             tool_use_id = block.id
-
             logger.info(f"Tool call: {tool_name} {tool_input.get('path', '')}")
-
             try:
                 if tool_name == "tripletex_get":
                     result = await client.get(tool_input["path"], tool_input.get("params", {}))
@@ -368,35 +379,35 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                     result = await client.delete(tool_input["path"])
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
-
-                tool_results.append({
+                return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": json.dumps(result)
-                })
-
+                }
             except httpx.HTTPStatusError as e:
                 error_body = e.response.text
                 logger.error(f"API error {e.response.status_code}: {error_body}")
                 if e.response.status_code == 403 and "Invalid or expired token" in error_body:
-                    logger.error("Session token expired or invalid — aborting")
-                    return "completed"
-                tool_results.append({
+                    raise RuntimeError("token_expired")
+                return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "is_error": True,
                     "content": f"HTTP {e.response.status_code}: {error_body}"
-                })
+                }
             except Exception as e:
                 logger.error(f"Tool error: {e}")
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "is_error": True,
-                    "content": str(e)
-                })
+                raise
 
-        messages.append({"role": "user", "content": tool_results})
+        try:
+            tool_results = await asyncio.gather(*[execute_tool(b) for b in tool_blocks])
+        except RuntimeError as e:
+            if str(e) == "token_expired":
+                logger.error("Session token expired or invalid — aborting")
+                return "completed"
+            raise
+
+        messages.append({"role": "user", "content": list(tool_results)})
 
     logger.warning("Max iterations reached")
     return "completed"
