@@ -161,7 +161,7 @@ SYSTEM_PROMPT = """You are an expert accounting agent for Tripletex (Norwegian a
 - Supplier invoices: POST /supplierInvoice (NEVER use /incomingInvoice — it does not exist)
 - Salary: GET /salary/type, POST /salary/transaction, PUT /salary/transaction/{id}/:execute
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
-- Payment types: GET /ledger/paymentType
+- Payment types: GET /invoice/paymentType — lists incoming payment types valid for customer invoice /:payment calls. NEVER use /ledger/paymentType or /ledger/paymentTypeOut — these return 404 or outgoing types that will be rejected.
 
 ## Required Fields Per Resource
 
@@ -193,8 +193,10 @@ All IDs are plain integers (not objects). row starts at 1. externalId is REQUIRE
 {"date": "YYYY-MM-DD", "description": "...", "postings": [{"date": "YYYY-MM-DD", "account": {"id": X}, "amount": 100.0}, {"date": "YYYY-MM-DD", "account": {"id": Y}, "amount": -100.0}]}
 Postings must sum to 0. Positive = debit, negative = credit. Omit row field entirely — row 0 is system-generated and must never be included.
 
-**Payment registration** — PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=X&paidAmount=X (body: {})
-paymentTypeId: GET /ledger/paymentType to find correct id. paidAmountCurrency optional.
+**Payment registration:**
+1. GET /invoice/paymentType to find the correct incoming paymentTypeId
+2. PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=X&paidAmount=X (body: {})
+paidAmountCurrency optional. Invoice must be in sent state before payment can be registered.
 
 **Late fee (purregebyr):**
 1. GET /invoice wide range → get customer id
