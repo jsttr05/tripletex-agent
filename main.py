@@ -354,6 +354,14 @@ If a specific step returns 500, try the next step rather than abandoning the sal
 - Do NOT guess or invent others (e.g. `:reversePayment`, `:cancel`, `:reverse` — these do not exist and will 404)
 - `PUT /invoice/{id}/:createCreditNote` REQUIRES `?date=YYYY-MM-DD` as a query param — omitting it causes 422
 
+**Reversing, cancelling, or crediting an invoice — always use `:createCreditNote`.**
+Whenever the task asks to reverse, cancel, storno, credit, or negate an invoice — regardless of language — the correct action is `PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD`. This applies to all of these phrasings:
+- Norwegian: "kreditnota", "reverser", "annuller", "kanseller", "tilbakefør"
+- Portuguese: "reverter", "estornar", "estorno", "cancelar", "nota de crédito", "anular"
+- German: "stornieren", "storno", "gutschrift", "rückbuchung", "annullieren"
+- English: "reverse", "cancel", "credit note", "void", "negate"
+Do NOT give up or report that it is impossible — always proceed with `:createCreditNote`.
+
 **PUT /order/{id}/:invoice REQUIRES query params — missing them causes 422 "invoiceDate cannot be null".**
 - ALWAYS use: PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
 - Both invoiceDate AND invoiceDueDate are MANDATORY — omitting either causes immediate 422
