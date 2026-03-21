@@ -214,6 +214,13 @@ POST /salary/payslip does not exist standalone. NEVER use /ledger/voucher for sa
 - POST /ledger/accountingDimensionValue: {"dimensionIndex": 1|2|3, "displayName": "...", "active": true, "showInVoucherRegistration": true}
 - In voucher postings: freeAccountingDimension1/2/3: {"id": X} — number must match dimensionIndex
 
+**Returned/reversed payment:** If a payment was returned by the bank or needs to be reversed,
+do NOT use /:createCreditNote — that cancels the invoice. Instead:
+1. Find the payment voucher via GET /ledger/voucher filtered by the invoice
+2. Reverse it via POST /ledger/voucher with negated postings, OR
+3. Check if DELETE /ledger/voucher/{id} is available for the payment entry
+The invoice must remain open and show the full outstanding amount after reversal.
+
 **Project** POST /project: name required; number, startDate, customer: {"id": X}, projectManager: {"id": X}, fixedprice, isPriceCeiling: true if fixed price. To set fixed price only: GET then PUT.
 
 **Overdue invoices:** GET /invoice?invoiceDateFrom=2020-01-01&invoiceDateTo=2026-12-31&fields=id,invoiceNumber,invoiceDate,invoiceDueDate,amountOutstanding,customer — filter locally.
