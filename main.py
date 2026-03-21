@@ -158,7 +158,7 @@ SYSTEM_PROMPT = """You are an expert accounting agent for Tripletex (Norwegian a
 - Departments: GET/POST /department, PUT /department/{id}
 - Accounts: GET /ledger/account — fetch ONCE with ?fields=id,number,name&count=300; NEVER request again in same task
 - Vouchers: POST /ledger/voucher
-- Supplier invoices: POST /supplierInvoice
+- Supplier invoices: POST /incomingInvoice
 - Salary: GET /salary/type, POST /salary/transaction, PUT /salary/transaction/{id}/:execute
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
 
@@ -184,7 +184,7 @@ employmentType/remunerationType MUST be inside employmentDetails[0], not on the 
 1. POST /order; 2. POST /order/orderline; 3. PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
 Invoice fields: invoiceDate, invoiceDueDate — NOT dueDate. Valid GET fields: id, invoiceNumber, invoiceDate, invoiceDueDate, amount, amountExcludingVat, amountOutstanding, amountCurrency, customer, comment. NOT status.
 
-**Supplier invoice** POST /supplierInvoice:
+**Supplier invoice** POST /incomingInvoice:
 {"invoiceHeader": {"vendorId": X, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": X, "invoiceNumber": "...", "description": "..."}, "orderLines": [{"row": 1, "description": "...", "accountId": X, "amountInclVat": X, "vatTypeId": X}]}
 All IDs are plain integers (not objects). row starts at 1. Optional: ?sendTo=ledger.
 
@@ -192,9 +192,8 @@ All IDs are plain integers (not objects). row starts at 1. Optional: ?sendTo=led
 {"date": "YYYY-MM-DD", "description": "...", "postings": [{"date": "YYYY-MM-DD", "account": {"id": X}, "amount": 100.0}, {"date": "YYYY-MM-DD", "account": {"id": Y}, "amount": -100.0}]}
 Postings must sum to 0. Positive = debit, negative = credit. Omit row field.
 
-**Payment registration** — POST /ledger/voucher, NOT PUT /invoice/{id}/:payment (does not exist):
-- Debit bank account (1920) positive amount
-- Credit AR account (1500) negative amount, include customer: {"id": X} in that posting
+**Payment registration** — PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=X&paidAmount=X (body: {})
+paymentTypeId: GET /ledger/paymentType to find correct id. paidAmountCurrency optional.
 
 **Late fee (purregebyr):**
 1. GET /invoice wide range → get customer id
@@ -226,7 +225,7 @@ POST /salary/payslip does not exist standalone. NEVER use /ledger/voucher for sa
 
 **422 unrecoverable:** bank account not registered / company setup required → stop immediately.
 
-**Invoice actions — only :send and :createCreditNote.** :payment does NOT exist. Do not invent others.
+**Invoice actions:** :send, :createCreditNote, :payment, :createReminder. No others exist.
 
 **Credit note:** Any reverse/cancel/credit/void/storno/kreditnota/reverser/annuller/stornieren/estornar/nota de credito → PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD. Always proceed.
 
@@ -421,10 +420,6 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                     result = await client.get(path, tool_input.get("params", {}))
                 elif tool_name == "tripletex_post":
                     body = tool_input["body"]
-                    # Redirect /incomingInvoice → /supplierInvoice (correct endpoint).
-                    if path == "/incomingInvoice":
-                        logger.warning("REDIRECT: /incomingInvoice → /supplierInvoice (correct endpoint)")
-                        path = "/supplierInvoice"
                     # Strip system-generated row 0 from voucher postings before sending.
                     # Tripletex always rejects postings with row=0 or guiRow=0 with a 422.
                     if path == "/ledger/voucher" and isinstance(body.get("postings"), list):
