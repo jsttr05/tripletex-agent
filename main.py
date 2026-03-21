@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import time
 import httpx
 import anthropic
 from fastapi import FastAPI, HTTPException
@@ -400,7 +401,45 @@ If a specific step returns 500, try the next step rather than abandoning the sal
 - If you are unsure of a field name, use only the ones documented above — do not invent new ones
 - Only look up resources you don't already have IDs for
 
+## Read-only / analytical tasks — scope guard
+
+If the task is analytical or read-only in nature — for example it contains words like "analysieren", "analyze", "analyse", "compare", "Vergleich", "overview", "report", "summarize", "list all", "show me", "what are" — treat it as read-only:
+- Use ONLY GET endpoints. Do NOT call POST, PUT, or DELETE under any circumstances.
+- If you believe a write operation is genuinely required to complete the task, explain WHY in your response and ask for explicit confirmation — do not proceed automatically.
+- Creating resources (projects, activities, employees, invoices, etc.) without being explicitly asked is always wrong and will reduce your score.
+
 When you are done, say DONE. Do not ask for confirmation — just complete the task."""
+
+# ── Rate limit tracker ─────────────────────────────────────────────────────────
+
+# Configurable via env vars:
+#   ANTHROPIC_RPM_LIMIT  — requests per minute ceiling (default 40)
+#   ANTHROPIC_RPM_WINDOW — rolling window in seconds (default 60)
+_RPM_LIMIT  = int(os.environ.get("ANTHROPIC_RPM_LIMIT",  "40"))
+_RPM_WINDOW = int(os.environ.get("ANTHROPIC_RPM_WINDOW", "60"))
+
+class _RateLimitTracker:
+    """Tracks Anthropic API calls in a rolling window and proactively sleeps
+    before a call if we are approaching the per-minute limit, rather than
+    waiting for a 429 penalty which causes 30-45s reactive delays."""
+
+    def __init__(self, limit: int = _RPM_LIMIT, window: float = _RPM_WINDOW):
+        self._limit  = limit
+        self._window = window
+        self._calls: list[float] = []  # timestamps of recent calls
+
+    async def wait_if_needed(self) -> None:
+        now = time.monotonic()
+        # Drop timestamps outside the rolling window
+        self._calls = [t for t in self._calls if now - t < self._window]
+        if len(self._calls) >= self._limit - 2:  # leave 2-call safety margin
+            oldest = self._calls[0]
+            sleep_for = self._window - (now - oldest) + 0.5
+            if sleep_for > 0:
+                logger.info(f"Proactive rate-limit sleep {sleep_for:.1f}s ({len(self._calls)}/{self._limit} calls in window)")
+                await asyncio.sleep(sleep_for)
+        self._calls.append(time.monotonic())
+
 
 # ── Agent loop ─────────────────────────────────────────────────────────────────
 
@@ -458,10 +497,12 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
 
     max_iterations = 25
     consecutive_errors: dict[str, int] = {}  # path → consecutive 4xx count
+    rate_tracker = _RateLimitTracker()
 
     for iteration in range(max_iterations):
         logger.info(f"Agent iteration {iteration + 1}")
 
+        await rate_tracker.wait_if_needed()
         try:
             response = await anthropic_client.messages.create(
                 model="claude-sonnet-4-6",
@@ -587,11 +628,23 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
 
     attachments = request.files or request.attachments
 
-    status = await run_agent(
-        prompt=request.prompt,
-        client=tripletex,
-        attachments=attachments,
-    )
+    # Configurable via AGENT_TIMEOUT_SECONDS env var (default 120)
+    timeout_seconds = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "120"))
+    try:
+        status = await asyncio.wait_for(
+            run_agent(
+                prompt=request.prompt,
+                client=tripletex,
+                attachments=attachments,
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"run_agent timed out after {timeout_seconds}s")
+        raise HTTPException(
+            status_code=504,
+            detail="Agent timed out. The task may be too complex or the API is under heavy load.",
+        )
 
     return SolveResponse(status=status)
 
