@@ -151,6 +151,7 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Invoices:       GET /invoice,              PUT /invoice/{id}
   - Send invoice:   PUT /invoice/{id}/:send?sendType=EMAIL (sendType required: EMAIL, EHF, AVTALEGIRO, or PAPER). Returns 204 No Content on success.
   - Payment:        Invoice MUST be sent before payment can be registered. Flow: send first, then PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X
+  - If :payment returns 404: STOP immediately — do NOT retry with different amounts, dates, or paymentTypeIds. 404 on :payment means the invoice state does not allow payment registration. Report and stop.
   - Credit note:    PUT /invoice/{id}/:createCreditNote?date=YYYY-MM-DD (NOT POST)
   - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params; invoiceDateTo must be at least 1 day AFTER invoiceDateFrom
   - To find overdue invoices: ONE call: GET /invoice?invoiceDateFrom=2020-01-01&invoiceDateTo=2026-12-31&fields=id,invoiceNumber,invoiceDate,invoiceDueDate,amountOutstanding,customer — then filter locally for amountOutstanding > 0 and invoiceDueDate < today. Do NOT make multiple narrow date-range searches.
@@ -236,7 +237,8 @@ Step 2 — POST /employee/employment (if task mentions start date or employment 
 **Payment** (PUT /invoice/{id}/:payment):
 - Use PUT with QUERY PARAMS: ?paymentDate=YYYY-MM-DD&paymentTypeId=1&paidAmount=X
 - paymentTypeId 1 = bank transfer (default)
-- paidAmount = the amount being paid (full outstanding amount unless partial)
+- paidAmount = use amountOutstanding from the invoice (do NOT calculate from exchange rate or VAT — always read amountOutstanding directly from the invoice response)
+- If :payment returns 404, stop — do NOT retry with different params. Report and stop.
 
 **Free accounting dimension** (POST /ledger/accountingDimensionName):
 - dimensionName: "string" (the name, e.g. "Prosjekttype")
@@ -328,6 +330,10 @@ If a specific step returns 500, try the next step rather than abandoning the sal
 - vatType id for Norwegian 25% VAT is ALWAYS `{"id": 3}` — hardcoded, permanent, never changes
 - Do NOT call /vatType, /product/vatType, /ledger/vatType, or any endpoint containing "vatType"
 - Any call to a vatType endpoint is a guaranteed 4xx error and a score penalty
+
+**NEVER RETRY THE SAME ENDPOINT AFTER 404.**
+- A 404 means the resource or action does not exist in its current state — changing the date, amount, or paymentTypeId will NOT fix it
+- If an action endpoint (e.g. :payment, :send) returns 404, stop and report — do NOT try again with different parameters
 
 **UNRECOVERABLE ERRORS: Do not retry after these 422 errors.**
 - "bank account not registered" → this blocks ALL invoice creation paths. Do NOT retry with POST /invoice, PUT /order/{id}/:invoice, or any other invoice endpoint. Report and stop immediately.
