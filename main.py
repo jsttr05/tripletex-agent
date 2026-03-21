@@ -200,8 +200,8 @@ Step 1 — POST /employee (basic info only):
 Step 2 — POST /employee/employment (if task mentions start date or employment details):
 - employee: {"id": <employee_id>} (from step 1 response)
 - startDate: "YYYY-MM-DD"
-- employmentType: "ORDINARY" (default)
 - remunerationType: "MONTHLY_WAGE" (default unless specified)
+- DO NOT include employmentType — this field does not exist on Employment and causes 422
 
 **Customer** (POST /customer):
 - name (required)
@@ -311,7 +311,11 @@ Rules:
 
 Step 1 — Create a salary transaction (the payroll run):
 POST /salary/transaction
-Body: {"date": "YYYY-MM-DD"}   ← use the last day of the current month as date
+Body: {"date": "YYYY-MM-DD", "year": YYYY, "month": M}
+- date: last day of the salary month (e.g. "2024-01-31")
+- year: the 4-digit year as integer (e.g. 2024)
+- month: the month number as integer 1-12 (e.g. 1 for January)
+- All three fields are required — omitting year or month causes 422
 
 Step 2 — Create a payslip for the employee within that transaction:
 POST /salary/payslip
@@ -447,7 +451,9 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
 
     messages = [{"role": "user", "content": user_content}]
 
-    max_iterations = 15
+    max_iterations = 25
+    consecutive_errors: dict[str, int] = {}  # path → consecutive 4xx count
+
     for iteration in range(max_iterations):
         logger.info(f"Agent iteration {iteration + 1}")
 
@@ -512,11 +518,16 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                 logger.error(f"API error {e.response.status_code}: {error_body}")
                 if e.response.status_code == 403 and "Invalid or expired token" in error_body:
                     raise RuntimeError("token_expired")
+                path = tool_input.get("path", "")
+                consecutive_errors[path] = consecutive_errors.get(path, 0) + 1
+                extra = ""
+                if consecutive_errors[path] >= 2:
+                    extra = f" [WARNING: this is error #{consecutive_errors[path]} on {path} — stop retrying this path with the same approach, use only documented field names or report failure]"
                 return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "is_error": True,
-                    "content": f"HTTP {e.response.status_code}: {error_body}"
+                    "content": f"HTTP {e.response.status_code}: {error_body}{extra}"
                 }
             except Exception as e:
                 logger.error(f"Tool error: {e}")
