@@ -158,9 +158,10 @@ SYSTEM_PROMPT = """You are an expert accounting agent for Tripletex (Norwegian a
 - Departments: GET/POST /department, PUT /department/{id}
 - Accounts: GET /ledger/account — fetch ONCE with ?fields=id,number,name&count=300; NEVER request again in same task
 - Vouchers: POST /ledger/voucher
-- Supplier invoices: POST /incomingInvoice
+- Supplier invoices: POST /supplierInvoice (NEVER use /incomingInvoice — it does not exist)
 - Salary: GET /salary/type, POST /salary/transaction, PUT /salary/transaction/{id}/:execute
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
+- Payment types: GET /ledger/paymentType
 
 ## Required Fields Per Resource
 
@@ -184,13 +185,13 @@ employmentType/remunerationType MUST be inside employmentDetails[0], not on the 
 1. POST /order; 2. POST /order/orderline; 3. PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
 Invoice fields: invoiceDate, invoiceDueDate — NOT dueDate. Valid GET fields: id, invoiceNumber, invoiceDate, invoiceDueDate, amount, amountExcludingVat, amountOutstanding, amountCurrency, customer, comment. NOT status.
 
-**Supplier invoice** POST /incomingInvoice:
-{"invoiceHeader": {"vendorId": X, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": X, "invoiceNumber": "...", "description": "..."}, "orderLines": [{"row": 1, "description": "...", "accountId": X, "amountInclVat": X, "vatTypeId": X}]}
-All IDs are plain integers (not objects). row starts at 1. Optional: ?sendTo=ledger.
+**Supplier invoice** POST /supplierInvoice (NEVER /incomingInvoice):
+{"invoiceHeader": {"vendorId": X, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": X, "invoiceNumber": "...", "description": "..."}, "orderLines": [{"row": 1, "externalId": "1", "description": "...", "accountId": X, "amountInclVat": X, "vatTypeId": X}]}
+All IDs are plain integers (not objects). row starts at 1. externalId is REQUIRED on every orderLine — use the line number as a string ("1", "2", etc.) if no explicit ID exists. Optional: ?sendTo=ledger.
 
 **Voucher** POST /ledger/voucher:
 {"date": "YYYY-MM-DD", "description": "...", "postings": [{"date": "YYYY-MM-DD", "account": {"id": X}, "amount": 100.0}, {"date": "YYYY-MM-DD", "account": {"id": Y}, "amount": -100.0}]}
-Postings must sum to 0. Positive = debit, negative = credit. Omit row field.
+Postings must sum to 0. Positive = debit, negative = credit. Omit row field entirely — row 0 is system-generated and must never be included.
 
 **Payment registration** — PUT /invoice/{id}/:payment?paymentDate=YYYY-MM-DD&paymentTypeId=X&paidAmount=X (body: {})
 paymentTypeId: GET /ledger/paymentType to find correct id. paidAmountCurrency optional.
@@ -220,6 +221,8 @@ POST /salary/payslip does not exist standalone. NEVER use /ledger/voucher for sa
 **VAT:** vatType {"id": 3} = 25% Norwegian VAT. NEVER call any vatType endpoint — guaranteed 4xx.
 
 **Scope guard:** Only act on what the task explicitly requests. Before every POST/PUT/DELETE: did the task ask for this? For analytical tasks (analyze/overview/report/list/compare/summarize/reconcile): GET only. Do NOT create records without explicit instruction. Do NOT send emails (/:send) unless explicitly asked.
+
+**Account list:** You have already fetched /ledger/account at the start. It is in your context. Do NOT request it again under any circumstances. If you are about to call /ledger/account again, stop — look up the account in the data already in your conversation history and proceed.
 
 **404 = stop:** Never retry after 404. Report and stop.
 
@@ -341,32 +344,59 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
     max_iterations = 25
     consecutive_errors: dict[str, int] = {}  # path → consecutive 4xx count
     # Per-run cache for /ledger/account — chart of accounts never changes mid-task.
-    # Keyed by path prefix; stores the serialised result string to return on repeat calls.
     account_cache: dict[str, str] = {}
     rate_tracker = _RateLimitTracker()
+
+    # FIX 4: Retry constants for Anthropic API overload (529) errors
+    _ANTHROPIC_MAX_RETRIES = 3
+    _ANTHROPIC_RETRY_DELAYS = [5, 15, 30]
 
     for iteration in range(max_iterations):
         logger.info(f"Agent iteration {iteration + 1}")
 
         await rate_tracker.wait_if_needed()
-        try:
-            async with _anthropic_semaphore:
-                response = await anthropic_client.messages.create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=8192,
-                    system=SYSTEM_PROMPT,
-                    tools=tools,
-                    messages=messages,
-                )
-        except anthropic.RateLimitError as e:
-            logger.error(f"Anthropic rate limit hit: {e}")
+
+        # FIX 4: Wrap Anthropic API call with 529 overloaded retry logic
+        response = None
+        for attempt in range(_ANTHROPIC_MAX_RETRIES):
+            try:
+                async with _anthropic_semaphore:
+                    response = await anthropic_client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=8192,
+                        system=SYSTEM_PROMPT,
+                        tools=tools,
+                        messages=messages,
+                    )
+                break  # success — exit retry loop
+            except anthropic.RateLimitError as e:
+                logger.error(f"Anthropic rate limit hit: {e}")
+                return "failed"
+            except anthropic.BadRequestError as e:
+                logger.error(f"Anthropic bad request: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+            except anthropic.APIStatusError as e:
+                if e.status_code == 529:
+                    if attempt < _ANTHROPIC_MAX_RETRIES - 1:
+                        delay = _ANTHROPIC_RETRY_DELAYS[attempt]
+                        logger.warning(f"Anthropic overloaded (529), retrying in {delay}s (attempt {attempt + 1}/{_ANTHROPIC_MAX_RETRIES})")
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.error("Anthropic overloaded (529) — all retries exhausted")
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Anthropic API is temporarily overloaded. Please retry your request in a moment."
+                        )
+                logger.error(f"Anthropic API status error {e.status_code}: {e}")
+                raise HTTPException(status_code=500, detail=f"Anthropic API error {e.status_code}: {e}")
+            except Exception as e:
+                logger.error(f"Anthropic API error: {e}")
+                raise HTTPException(status_code=500, detail=f"Unexpected error calling Anthropic API: {e}")
+
+        if response is None:
+            logger.error("No response from Anthropic API after all retries")
             return "failed"
-        except anthropic.BadRequestError as e:
-            logger.error(f"Anthropic bad request: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.error(f"Anthropic API error: {e}")
-            raise HTTPException(status_code=500, detail=f"Unexpected error calling Anthropic API: {e}")
 
         # Add assistant response to message history
         messages.append({"role": "assistant", "content": response.content})
@@ -392,6 +422,7 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             tool_use_id = block.id
             path = tool_input.get("path", "")
             logger.info(f"Tool call: {tool_name} {path}")
+
             # True only for the account list endpoint, not /ledger/account/{id}
             _is_account_list = (
                 path.rstrip("/") == "/ledger/account"
@@ -400,11 +431,11 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                     and not path[len("/ledger/account"):].lstrip("/")[:1].isdigit()
                 )
             )
+
             try:
                 if tool_name == "tripletex_get":
-                    # Cache the full account list — only for the list endpoint (not /ledger/account/{id}).
-                    # On a cache hit return a short warning; re-injecting 8000 chars every iteration
-                    # balloons input tokens and triggers the 30k token/min rate limit.
+                    # FIX 5 (strengthened): Cache the full account list.
+                    # On a cache hit return a forceful warning — the polite version was being ignored.
                     if _is_account_list and "/ledger/account" in account_cache:
                         account_cache["_hit_count"] = str(int(account_cache.get("_hit_count", "0")) + 1)
                         logger.warning(f"SCOPE: agent requested /ledger/account again (hit #{account_cache['_hit_count']}) — returning warning only")
@@ -412,14 +443,24 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
                             "content": (
-                                "[STOP: You have already fetched the account list. It is in your context. "
-                                "Do NOT call /ledger/account again. Look up the account in the data you already have "
-                                "and proceed with the next action in your plan.]"
+                                "[CRITICAL ERROR: You called /ledger/account again. This is forbidden. "
+                                "The full account list is already in your conversation history from iteration 1. "
+                                "Scroll back and find the account number you need. "
+                                "Your next action must NOT be another /ledger/account call — "
+                                "proceed immediately with the write operation using account data you already have.]"
                             ),
                         }
                     result = await client.get(path, tool_input.get("params", {}))
+
                 elif tool_name == "tripletex_post":
                     body = tool_input["body"]
+
+                    # FIX 1: Redirect /incomingInvoice → /supplierInvoice.
+                    # The endpoint /incomingInvoice does not exist; /supplierInvoice is correct.
+                    if path == "/incomingInvoice":
+                        logger.info("REDIRECT: /incomingInvoice → /supplierInvoice")
+                        path = "/supplierInvoice"
+
                     # Strip system-generated row 0 from voucher postings before sending.
                     # Tripletex always rejects postings with row=0 or guiRow=0 with a 422.
                     if path == "/ledger/voucher" and isinstance(body.get("postings"), list):
@@ -431,34 +472,51 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                         stripped = original_count - len(body["postings"])
                         if stripped:
                             logger.info(f"Stripped {stripped} row-0 posting(s) from /ledger/voucher body")
+
+                    # FIX 3: Auto-populate missing externalId on /supplierInvoice orderLines.
+                    # externalId is required on every line; use line index as string if absent.
+                    if path == "/supplierInvoice" and isinstance(body.get("orderLines"), list):
+                        for i, line in enumerate(body["orderLines"]):
+                            if not line.get("externalId"):
+                                line["externalId"] = str(i + 1)
+                                logger.info(f"AUTO-INJECT: externalId='{i + 1}' added to supplierInvoice orderLines[{i}]")
+
                     result = await client.post(path, body)
+
                 elif tool_name == "tripletex_put":
                     put_path = path
                     put_body = tool_input["body"]
-                    # Auto-inject sendType=EMAIL on /:send if missing — this error appears in every run.
+
+                    # FIX 2: Auto-inject sendType=EMAIL on /:send if missing.
+                    # This error has appeared in every single log set — fix it unconditionally in code.
                     if "/:send" in put_path and "sendType" not in put_path:
                         logger.warning(f"AUTO-INJECT: sendType=EMAIL added to {put_path}")
                         sep = "&" if "?" in put_path else "?"
                         put_path = put_path + sep + "sendType=EMAIL"
+
                     result = await client.put(put_path, put_body)
+
                 elif tool_name == "tripletex_delete":
                     result = await client.delete(path)
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
+
                 result_str = json.dumps(result)
                 # Truncate very large responses to prevent context token explosion.
-                # Account/product lists can be 100+ entries; keep enough to be useful.
                 if len(result_str) > 8000:
                     result_str = result_str[:8000] + "\n... [truncated, use ?fields= and filters to narrow results]"
+
                 # Populate account cache on first successful /ledger/account list fetch.
                 if tool_name == "tripletex_get" and _is_account_list and "/ledger/account" not in account_cache:
                     account_cache["/ledger/account"] = result_str
                     logger.info(f"Cached /ledger/account ({len(result_str)} chars)")
+
                 return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": result_str
                 }
+
             except httpx.HTTPStatusError as e:
                 error_body = e.response.text
                 logger.error(f"API error {e.response.status_code}: {error_body}")
@@ -467,7 +525,10 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                 consecutive_errors[path] = consecutive_errors.get(path, 0) + 1
                 extra = ""
                 if consecutive_errors[path] >= 2:
-                    extra = f" [WARNING: this is error #{consecutive_errors[path]} on {path} — stop retrying this path with the same approach, use only documented field names or report failure]"
+                    extra = (
+                        f" [WARNING: this is error #{consecutive_errors[path]} on {path} — "
+                        f"stop retrying this path with the same approach, use only documented field names or report failure]"
+                    )
                 return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -551,6 +612,8 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
         # French
         "clôture", "amortissement", "amortissements", "comptabilisez", "comptabiliser",
         "immobilisation", "extourne", "provision", "bénéfice", "annuelle", "rapproch",
+        # Portuguese
+        "reconcil", "analise", "comparar", "verificar", "rever", "erros",
     }
     prompt_lower = request.prompt.lower()
     has_attachment = bool(attachments)
@@ -563,12 +626,13 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
     keyword_match = any(kw in prompt_lower for kw in _COMPLEX_KEYWORDS)
     is_complex = has_attachment or has_multiple_actions or keyword_match
     reason = []
-    if has_attachment:   reason.append("attachment")
-    if has_multiple_actions: reason.append("multi-action")
-    if keyword_match:    reason.append("keyword")
+    if has_attachment:        reason.append("attachment")
+    if has_multiple_actions:  reason.append("multi-action")
+    if keyword_match:         reason.append("keyword")
     default_timeout = 300 if is_complex else 240
     timeout_seconds = int(os.environ.get("AGENT_TIMEOUT_SECONDS", str(default_timeout)))
     logger.info(f"Agent timeout: {timeout_seconds}s (complex={is_complex}, reasons={reason})")
+
     try:
         status = await asyncio.wait_for(
             run_agent(
