@@ -401,6 +401,20 @@ If a specific step returns 500, try the next step rather than abandoning the sal
 - If you are unsure of a field name, use only the ones documented above — do not invent new ones
 - Only look up resources you don't already have IDs for
 
+## Pre-flight validation — required before every POST or PUT
+
+Before making ANY POST or PUT request, explicitly verify that every required field for that endpoint is present in your payload. Do not send a write request speculatively hoping the 422 response will tell you what is missing — that wastes an API call and directly reduces your score.
+
+Required fields checklist (the most commonly missed):
+- PUT /order/{id}/:invoice — MUST include `?invoiceDate=` AND `?invoiceDueDate=` as query params
+- PUT /invoice/{id}/:send — MUST include `?sendType=` (EMAIL, EHF, AVTALEGIRO, or PAPER)
+- PUT /invoice/{id}/:createCreditNote — MUST include `?date=YYYY-MM-DD`
+- PUT /invoice/{id}/:payment — MUST include `?paymentDate=`, `?paymentTypeId=`, and `?paidAmount=`
+- POST /salary/transaction — MUST include `date`, `year`, and `month` in body
+- POST /employee — MUST include `userType` and `department`
+
+If you do not yet know a required field value (e.g. the invoice date), fetch it with a GET first — then write. Never guess.
+
 ## Read-only / analytical tasks — scope guard
 
 If the task is analytical or read-only in nature — for example it contains words like "analysieren", "analyze", "analyse", "compare", "Vergleich", "overview", "report", "summarize", "list all", "show me", "what are" — treat it as read-only:
@@ -410,13 +424,20 @@ If the task is analytical or read-only in nature — for example it contains wor
 
 When you are done, say DONE. Do not ask for confirmation — just complete the task."""
 
-# ── Rate limit tracker ─────────────────────────────────────────────────────────
+# ── Rate limit tracker + concurrency semaphore ─────────────────────────────────
 
 # Configurable via env vars:
-#   ANTHROPIC_RPM_LIMIT  — requests per minute ceiling (default 40)
-#   ANTHROPIC_RPM_WINDOW — rolling window in seconds (default 60)
-_RPM_LIMIT  = int(os.environ.get("ANTHROPIC_RPM_LIMIT",  "40"))
-_RPM_WINDOW = int(os.environ.get("ANTHROPIC_RPM_WINDOW", "60"))
+#   ANTHROPIC_RPM_LIMIT      — requests per minute ceiling (default 40)
+#   ANTHROPIC_RPM_WINDOW     — rolling window in seconds (default 60)
+#   ANTHROPIC_MAX_CONCURRENT — max simultaneous Anthropic API calls across all tasks (default 2)
+_RPM_LIMIT       = int(os.environ.get("ANTHROPIC_RPM_LIMIT",       "40"))
+_RPM_WINDOW      = int(os.environ.get("ANTHROPIC_RPM_WINDOW",      "60"))
+_MAX_CONCURRENT  = int(os.environ.get("ANTHROPIC_MAX_CONCURRENT",  "2"))
+
+# Module-level semaphore shared across all concurrent agent tasks.
+# Prevents multiple simultaneous tasks from hammering the API and compounding 429 penalties.
+_anthropic_semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+
 
 class _RateLimitTracker:
     """Tracks Anthropic API calls in a rolling window and proactively sleeps
@@ -497,6 +518,9 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
 
     max_iterations = 25
     consecutive_errors: dict[str, int] = {}  # path → consecutive 4xx count
+    # Per-run cache for /ledger/account — chart of accounts never changes mid-task.
+    # Keyed by path prefix; stores the serialised result string to return on repeat calls.
+    account_cache: dict[str, str] = {}
     rate_tracker = _RateLimitTracker()
 
     for iteration in range(max_iterations):
@@ -504,13 +528,14 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
 
         await rate_tracker.wait_if_needed()
         try:
-            response = await anthropic_client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=tools,
-                messages=messages,
-            )
+            async with _anthropic_semaphore:
+                response = await anthropic_client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=4096,
+                    system=SYSTEM_PROMPT,
+                    tools=tools,
+                    messages=messages,
+                )
         except anthropic.RateLimitError as e:
             logger.error(f"Anthropic rate limit hit: {e}")
             return "failed"
@@ -543,16 +568,39 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             tool_name = block.name
             tool_input = block.input
             tool_use_id = block.id
-            logger.info(f"Tool call: {tool_name} {tool_input.get('path', '')}")
+            path = tool_input.get("path", "")
+            logger.info(f"Tool call: {tool_name} {path}")
             try:
                 if tool_name == "tripletex_get":
-                    result = await client.get(tool_input["path"], tool_input.get("params", {}))
+                    # Return cached chart of accounts without hitting the API again.
+                    if path.startswith("/ledger/account"):
+                        cache_key = "/ledger/account"
+                        if cache_key in account_cache:
+                            logger.info("Returning cached /ledger/account result")
+                            return {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": account_cache[cache_key],
+                            }
+                    result = await client.get(path, tool_input.get("params", {}))
                 elif tool_name == "tripletex_post":
-                    result = await client.post(tool_input["path"], tool_input["body"])
+                    body = tool_input["body"]
+                    # Strip system-generated row 0 from voucher postings before sending.
+                    # Tripletex always rejects postings with row=0 or guiRow=0 with a 422.
+                    if path == "/ledger/voucher" and isinstance(body.get("postings"), list):
+                        original_count = len(body["postings"])
+                        body["postings"] = [
+                            p for p in body["postings"]
+                            if p.get("row") != 0 and p.get("guiRow") != 0
+                        ]
+                        stripped = original_count - len(body["postings"])
+                        if stripped:
+                            logger.info(f"Stripped {stripped} row-0 posting(s) from /ledger/voucher body")
+                    result = await client.post(path, body)
                 elif tool_name == "tripletex_put":
-                    result = await client.put(tool_input["path"], tool_input["body"])
+                    result = await client.put(path, tool_input["body"])
                 elif tool_name == "tripletex_delete":
-                    result = await client.delete(tool_input["path"])
+                    result = await client.delete(path)
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
                 result_str = json.dumps(result)
@@ -560,6 +608,10 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                 # Account/product lists can be 100+ entries; keep enough to be useful.
                 if len(result_str) > 8000:
                     result_str = result_str[:8000] + "\n... [truncated, use ?fields= and filters to narrow results]"
+                # Populate account cache on first successful /ledger/account fetch.
+                if tool_name == "tripletex_get" and path.startswith("/ledger/account"):
+                    account_cache["/ledger/account"] = result_str
+                    logger.info(f"Cached /ledger/account ({len(result_str)} chars)")
                 return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -570,7 +622,6 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                 logger.error(f"API error {e.response.status_code}: {error_body}")
                 if e.response.status_code == 403 and "Invalid or expired token" in error_body:
                     raise RuntimeError("token_expired")
-                path = tool_input.get("path", "")
                 consecutive_errors[path] = consecutive_errors.get(path, 0) + 1
                 extra = ""
                 if consecutive_errors[path] >= 2:
@@ -628,8 +679,18 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
 
     attachments = request.files or request.attachments
 
-    # Configurable via AGENT_TIMEOUT_SECONDS env var (default 120)
-    timeout_seconds = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "120"))
+    # Timeout heuristic: complex/analytical tasks get 300s, others get 240s.
+    # AGENT_TIMEOUT_SECONDS env var overrides both.
+    _COMPLEX_KEYWORDS = {
+        "analyse", "analysere", "analysieren", "analyze",
+        "finn", "gå gjennom", "compare", "vergleich",
+        "errors", "feil", "audit", "review", "søk", "search",
+    }
+    prompt_lower = request.prompt.lower()
+    is_complex = any(kw in prompt_lower for kw in _COMPLEX_KEYWORDS)
+    default_timeout = 300 if is_complex else 240
+    timeout_seconds = int(os.environ.get("AGENT_TIMEOUT_SECONDS", str(default_timeout)))
+    logger.info(f"Agent timeout: {timeout_seconds}s (complex={is_complex})")
     try:
         status = await asyncio.wait_for(
             run_agent(
