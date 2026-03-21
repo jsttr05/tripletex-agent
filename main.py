@@ -327,12 +327,21 @@ If a specific step returns 500, try the next step rather than abandoning the sal
 - Any call to a vatType endpoint is a guaranteed 4xx error and a score penalty
 
 **UNRECOVERABLE ERRORS: Do not retry after these 422 errors.**
-- "bank account not registered" → report and stop, do NOT try /invoice then /order/:invoice or vice versa
+- "bank account not registered" → this blocks ALL invoice creation paths. Do NOT retry with POST /invoice, PUT /order/{id}/:invoice, or any other invoice endpoint. Report and stop immediately.
 - "company setup required" type errors → report and stop immediately
+
+**INVOICE ACTION PATHS: Only three valid actions exist on invoices.**
+- Valid: `:send`, `:payment`, `:createCreditNote` — these are the ONLY valid action paths
+- Do NOT guess or invent others (e.g. `:reversePayment`, `:cancel`, `:reverse` — these do not exist and will 404)
+- `PUT /invoice/{id}/:createCreditNote` REQUIRES `?date=YYYY-MM-DD` as a query param — omitting it causes 422
 
 **PUT /order/{id}/:invoice REQUIRES query params — missing them causes 422.**
 - ALWAYS use: PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
 - invoiceDate and invoiceDueDate are MANDATORY query parameters, never omit them
+
+**TIMESHEET ENTRIES: Validate date against project startDate before posting.**
+- The project GET response includes startDate — entry date MUST be on or after this date
+- If the requested date is before project startDate, do NOT post — report the conflict and stop
 
 **ORDERLINES: Post lines SEQUENTIALLY, one per turn.**
 - Tripletex uses optimistic locking on orders — posting multiple orderlines in parallel causes 409 RevisionException
