@@ -298,6 +298,7 @@ The number (1/2/3) must match the dimensionIndex of the value.
 - Avoid 4xx errors — plan your calls correctly before executing
 - Do NOT look up vatType, currency, or other static data — use known values directly
 - You can make MULTIPLE tool calls in a single turn — do this for ALL independent operations (lookups AND writes)
+- When fetching /ledger/account, fetch ONCE with ?fields=id,number,name&count=300 — do NOT paginate across multiple calls
 
 ## How to approach each task
 1. THINK first — read the full prompt and write out your plan as text: what resources need to be created/modified, in what order, what data you already have vs need to look up
@@ -353,13 +354,17 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
     for iteration in range(max_iterations):
         logger.info(f"Agent iteration {iteration + 1}")
 
-        response = await anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=tools,
-            messages=messages,
-        )
+        try:
+            response = await anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=4096,
+                system=SYSTEM_PROMPT,
+                tools=tools,
+                messages=messages,
+            )
+        except anthropic.RateLimitError as e:
+            logger.error(f"Anthropic rate limit hit: {e}")
+            return "failed"
 
         # Add assistant response to message history
         messages.append({"role": "assistant", "content": response.content})
@@ -395,10 +400,15 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                     result = await client.delete(tool_input["path"])
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
+                result_str = json.dumps(result)
+                # Truncate very large responses to prevent context token explosion.
+                # Account/product lists can be 100+ entries; keep enough to be useful.
+                if len(result_str) > 8000:
+                    result_str = result_str[:8000] + "\n... [truncated, use ?fields= and filters to narrow results]"
                 return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
-                    "content": json.dumps(result)
+                    "content": result_str
                 }
             except httpx.HTTPStatusError as e:
                 error_body = e.response.text
@@ -422,6 +432,9 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                 logger.error("Session token expired or invalid — aborting")
                 return "completed"
             raise
+        except anthropic.RateLimitError as e:
+            logger.error(f"Anthropic rate limit hit: {e}")
+            return "failed"
 
         messages.append({"role": "user", "content": list(tool_results)})
 
