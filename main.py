@@ -325,17 +325,20 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
     # Build initial user message
     user_content = [{"type": "text", "text": prompt}]
 
-    # Attach files if present (images/PDFs as base64)
+    # Attach files if present (images/PDFs as base64, CSV/text decoded inline)
     if attachments:
+        import base64
         for att in attachments:
-            mime = att.get("mime_type", "image/png")
+            mime = att.get("mime_type", "application/octet-stream")
+            name = att.get("name", att.get("filename", "file"))
+            b64 = att.get("base64", att.get("data", ""))
             if mime == "application/pdf":
                 user_content.append({
                     "type": "document",
                     "source": {
                         "type": "base64",
                         "media_type": "application/pdf",
-                        "data": att["base64"]
+                        "data": b64
                     }
                 })
             elif mime.startswith("image/"):
@@ -344,9 +347,20 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                     "source": {
                         "type": "base64",
                         "media_type": mime,
-                        "data": att["base64"]
+                        "data": b64
                     }
                 })
+            else:
+                # CSV, plain text, and other text-based files — decode and embed as text
+                try:
+                    decoded = base64.b64decode(b64).decode("utf-8", errors="replace")
+                except Exception:
+                    decoded = b64  # already plain text
+                user_content.append({
+                    "type": "text",
+                    "text": f"[Attached file: {name}]\n{decoded}"
+                })
+                logger.info(f"Attached text file '{name}' ({len(decoded)} chars)")
 
     messages = [{"role": "user", "content": user_content}]
 
