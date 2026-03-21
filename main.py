@@ -202,13 +202,16 @@ Step 2 — POST /employee/employment (if task mentions start date or employment 
 - name (required)
 - isCustomer: true (always include)
 - email, phoneNumber, organizationNumber (if provided)
-- address if street/city/zip given: {"physicalAddress": {"addressLine1": "...", "city": "...", "postCode": "...", "country": {"id": 161}}} (161 = Norway)
+- Do NOT include any address fields in the POST /customer body — they will be rejected with 422
+- To set address: after POST /customer succeeds, the response includes physicalAddress.id — then PUT /address/{id} with body: {"addressLine1": "...", "postalCode": "...", "city": "...", "country": {"id": 161}}
+- country id 161 = Norway (default if not specified)
 
 **Supplier** (POST /supplier):
 - name (required)
 - isSupplier: true (always include)
 - organizationNumber (if provided)
 - email, phoneNumber (if provided)
+- Do NOT include address in POST body — set it via PUT /address/{id} after creation (same as customer)
 - IMPORTANT: use /supplier for "leverandør/lieferant/proveedor/fornecedor/supplier" — NEVER use /customer for a supplier
 
 **Product** (POST /product):
