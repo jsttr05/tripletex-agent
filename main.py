@@ -387,6 +387,7 @@ If a specific step returns 500, try the next step rather than abandoning the sal
 - Do NOT look up vatType, currency, or other static data — use known values directly
 - You can make MULTIPLE tool calls in a single turn — do this for ALL independent operations (lookups AND writes)
 - When fetching /ledger/account, fetch ONCE with ?fields=id,number,name&count=300 — do NOT paginate across multiple calls
+- NEVER request /ledger/account more than once per task — the full account list is in your context after the first fetch. Any repeat request wastes tokens and triggers rate limits. If you need a specific account, look it up in the data already retrieved.
 
 ## How to approach each task
 1. THINK first — read the full prompt and write out your plan as text: what resources need to be created/modified, in what order, what data you already have vs need to look up
@@ -570,18 +571,27 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             tool_use_id = block.id
             path = tool_input.get("path", "")
             logger.info(f"Tool call: {tool_name} {path}")
+            # True only for the account list endpoint, not /ledger/account/{id}
+            _is_account_list = (
+                path.rstrip("/") == "/ledger/account"
+                or (
+                    path.startswith("/ledger/account")
+                    and not path[len("/ledger/account"):].lstrip("/")[:1].isdigit()
+                )
+            )
             try:
                 if tool_name == "tripletex_get":
-                    # Return cached chart of accounts without hitting the API again.
-                    if path.startswith("/ledger/account"):
-                        cache_key = "/ledger/account"
-                        if cache_key in account_cache:
-                            logger.info("Returning cached /ledger/account result")
-                            return {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": account_cache[cache_key],
-                            }
+                    # Cache the full account list — only for the list endpoint (not /ledger/account/{id}).
+                    # On a cache hit return a short reminder instead of the full 8000-char payload;
+                    # the data is already in the message history and re-injecting it each turn
+                    # balloons the input token count and triggers the 30k token/min rate limit.
+                    if _is_account_list and "/ledger/account" in account_cache:
+                        logger.info("Returning short cache-hit notice for /ledger/account")
+                        return {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": "[Account list already fetched — full data is in your earlier tool result. Do not request again. Use the account numbers and IDs already retrieved.]",
+                        }
                     result = await client.get(path, tool_input.get("params", {}))
                 elif tool_name == "tripletex_post":
                     body = tool_input["body"]
@@ -608,8 +618,8 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                 # Account/product lists can be 100+ entries; keep enough to be useful.
                 if len(result_str) > 8000:
                     result_str = result_str[:8000] + "\n... [truncated, use ?fields= and filters to narrow results]"
-                # Populate account cache on first successful /ledger/account fetch.
-                if tool_name == "tripletex_get" and path.startswith("/ledger/account"):
+                # Populate account cache on first successful /ledger/account list fetch.
+                if tool_name == "tripletex_get" and _is_account_list and "/ledger/account" not in account_cache:
                     account_cache["/ledger/account"] = result_str
                     logger.info(f"Cached /ledger/account ({len(result_str)} chars)")
                 return {
@@ -685,6 +695,10 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
         "analyse", "analysere", "analysieren", "analyze",
         "finn", "gå gjennom", "compare", "vergleich",
         "errors", "feil", "audit", "review", "søk", "search",
+        # Norwegian accounting / year-end terms
+        "årsoppgjør", "avskrivning", "avskrivninger", "bokfør", "bokføring",
+        "regnskap", "balanse", "resultat", "årsregnskap", "depreciati",
+        "bilag", "periode", "kvartal", "årlig",
     }
     prompt_lower = request.prompt.lower()
     is_complex = any(kw in prompt_lower for kw in _COMPLEX_KEYWORDS)
