@@ -156,6 +156,10 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
   - Search:         GET /invoice requires invoiceDateFrom and invoiceDateTo params; invoiceDateTo must be at least 1 day AFTER invoiceDateFrom
   - To find overdue invoices: ONE call: GET /invoice?invoiceDateFrom=2020-01-01&invoiceDateTo=2026-12-31&fields=id,invoiceNumber,invoiceDate,invoiceDueDate,amountOutstanding,customer — then filter locally for amountOutstanding > 0 and invoiceDueDate < today. Do NOT make multiple narrow date-range searches.
   - Valid fields:   id, invoiceNumber, invoiceDate, invoiceDueDate, amount, amountExcludingVat, amountOutstanding, amountCurrency, customer, comment (NOT "status")
+- Timesheets:     POST /timesheet/entry — fields: employee{id}, activity{id}, project{id}, date, hours
+  - Activities:   GET /activity?name=<name>&isProjectActivity=true — ALWAYS use isProjectActivity=true for project timesheets
+  - Do NOT use GET /project/activity — that endpoint does not exist and returns 422
+  - An activity found with isProjectActivity=false CANNOT be used on a project timesheet (returns "Aktiviteten kan ikke benyttes")
 - Travel expense: GET/POST /travelExpense,    DELETE /travelExpense/{id}
 - Projects:       GET/POST /project,          PUT /project/{id}
 - Departments:    GET/POST /department,       PUT /department/{id}
@@ -296,7 +300,8 @@ POST /ledger/voucher body:
 ```
 Rules:
 - `amountGross` MUST equal `amountGrossCurrency` for NOK — they must be identical numbers
-- Do NOT include a posting with guiRow=0 — Tripletex auto-generates the balancing row
+- NEVER include a posting with guiRow=0 or row=0 — Tripletex auto-generates this row. Including it causes 422 "systemgenererte".
+- Every posting you include must have a non-zero row index — just omit the row field entirely and let Tripletex assign it
 - Postings must balance: debits equal credits (use positive for debit, negative for credit)
 - Typical accounts: 1500 = Accounts receivable, 3000 = Sales income, 8070 = Interest income, 7770 = Late fee income
 
@@ -344,9 +349,10 @@ If a specific step returns 500, try the next step rather than abandoning the sal
 - Do NOT guess or invent others (e.g. `:reversePayment`, `:cancel`, `:reverse` — these do not exist and will 404)
 - `PUT /invoice/{id}/:createCreditNote` REQUIRES `?date=YYYY-MM-DD` as a query param — omitting it causes 422
 
-**PUT /order/{id}/:invoice REQUIRES query params — missing them causes 422.**
+**PUT /order/{id}/:invoice REQUIRES query params — missing them causes 422 "invoiceDate cannot be null".**
 - ALWAYS use: PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
-- invoiceDate and invoiceDueDate are MANDATORY query parameters, never omit them
+- Both invoiceDate AND invoiceDueDate are MANDATORY — omitting either causes immediate 422
+- This is the single most common avoidable error — double-check before every call to /:invoice
 
 **TIMESHEET ENTRIES: Validate date against project startDate before posting.**
 - The project GET response includes startDate — entry date MUST be on or after this date
