@@ -420,6 +420,11 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
             name = att.get("name", att.get("filename", "file"))
             b64 = att.get("base64", att.get("data", ""))
             if mime == "application/pdf":
+                if not b64:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Attached PDF '{name}' is empty or was not received correctly. Please re-upload the file."
+                    )
                 user_content.append({
                     "type": "document",
                     "source": {
@@ -468,6 +473,12 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
         except anthropic.RateLimitError as e:
             logger.error(f"Anthropic rate limit hit: {e}")
             return "failed"
+        except anthropic.BadRequestError as e:
+            logger.error(f"Anthropic bad request: {e}")
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Anthropic API error: {e}")
+            raise HTTPException(status_code=500, detail=f"Unexpected error calling Anthropic API: {e}")
 
         # Add assistant response to message history
         messages.append({"role": "assistant", "content": response.content})
