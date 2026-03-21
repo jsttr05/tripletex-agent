@@ -160,7 +160,7 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Accounts:       GET /ledger/account
 - Vouchers:       POST /ledger/voucher (fields: date, description, postings[{account,customer/supplier,amount,description}])
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
-- Salary/payroll:  GET/POST /salary/payslip, GET/POST /salary/transaction
+- Salary/payroll:  See full flow below — DO NOT use /ledger/voucher for salary tasks
 
 ## How to create an invoice
 Two valid flows:
@@ -259,6 +259,30 @@ The number (1/2/3) must match the dimensionIndex of the value.
 - fixedprice: amount (if fixed price mentioned)
 - isPriceCeiling: true (if fixed price / price ceiling mentioned)
 - NOTE: if task only says "set fixed price on project", just GET the project then PUT with fixedprice — do NOT create orders or invoices
+
+## How to run payroll (kjør lønn)
+
+**NEVER use /ledger/voucher to record salary — always use the salary API.**
+
+Step 1 — Create a salary transaction (the payroll run):
+POST /salary/transaction
+Body: {"date": "YYYY-MM-DD"}   ← use the last day of the current month as date
+
+Step 2 — Create a payslip for the employee within that transaction:
+POST /salary/payslip
+Body: {"transaction": {"id": <tx_id>}, "employee": {"id": <emp_id>}}
+
+Step 3 — Add wage lines to the payslip:
+POST /salary/payslip/{payslip_id}/wageTransaction (or /salary/specification)
+Body: {"payslip": {"id": <payslip_id>}, "wageType": {"number": 100}, "amount": <gross_salary>}
+- Wage type number 100 = regular monthly salary (fastlønn). Use this by default.
+- amount = the gross salary amount (e.g. 44350)
+
+Step 4 — Execute the salary run:
+PUT /salary/transaction/{tx_id}/:execute
+
+If GET /salary/transaction returns 500, skip it and go straight to POST /salary/transaction — do not give up.
+If a specific step returns 500, try the next step rather than abandoning the salary flow.
 
 ## ABSOLUTE RULES — violations directly reduce your score
 
