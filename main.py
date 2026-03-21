@@ -487,7 +487,7 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
         for att in attachments:
             mime = att.get("mime_type", "application/octet-stream")
             name = att.get("name", att.get("filename", "file"))
-            b64 = att.get("base64", att.get("data", ""))
+            b64 = att.get("base64", att.get("content_base64", att.get("data", "")))
             if mime == "application/pdf":
                 if not b64:
                     raise HTTPException(
@@ -681,7 +681,7 @@ async def handle_solve(request: SolveRequest) -> SolveResponse:
             "name": att.get("name", att.get("filename", "?")),
             "mime_type": att.get("mime_type", att.get("type", "?")),
             "keys": list(att.keys()),
-            "base64_len": len(att.get("base64", att.get("data", "")) or ""),
+            "base64_len": len(att.get("base64", att.get("content_base64", att.get("data", ""))) or ""),
         })
     if attachments_meta:
         logger.info(f"TASK ATTACHMENTS: {attachments_meta}")
