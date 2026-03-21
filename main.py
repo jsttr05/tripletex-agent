@@ -166,6 +166,7 @@ You receive accounting tasks in various languages (Norwegian, English, Spanish, 
 - Departments:    GET/POST /department,       PUT /department/{id}
 - Accounts:       GET /ledger/account
 - Vouchers:       POST /ledger/voucher — see posting rules below
+- Supplier inv:   POST /incomingInvoice — NOT /supplierInvoice (that path does not exist)
 - Free dimensions: GET/POST /ledger/accountingDimensionName, GET/POST /ledger/accountingDimensionValue
 - Salary/payroll:  See full flow below — DO NOT use /ledger/voucher for salary tasks
 
@@ -199,23 +200,36 @@ Step 1 — POST /employee (basic info only):
 - DO NOT include startDate, employmentPeriodStart, or any employment date in this body — those go in step 2
 
 Step 2 — POST /employee/employment (if task mentions start date or employment details):
-- employee: {"id": <employee_id>} (from step 1 response)
-- startDate: "YYYY-MM-DD"
-- remunerationType: "MONTHLY_WAGE" (default unless specified)
-- DO NOT include employmentType — this field does not exist on Employment and causes 422
+```json
+{
+  "employee": {"id": <employee_id>},
+  "startDate": "YYYY-MM-DD",
+  "employmentDetails": [
+    {
+      "date": "YYYY-MM-DD",
+      "employmentType": "ORDINARY",
+      "remunerationType": "MONTHLY_WAGE",
+      "employmentForm": "PERMANENT"
+    }
+  ]
+}
+```
+- employmentType and remunerationType MUST be nested inside employmentDetails[0] — NOT directly on the employment body
+- Valid employmentType values: ORDINARY, MARITIME, FREELANCE, NOT_CHOSEN
+- Valid remunerationType values: MONTHLY_WAGE, HOURLY_WAGE, COMMISION_PERCENTAGE, FEE, NOT_CHOSEN
 
 **Customer** (POST /customer):
 - name (required)
-- isCustomer: true (always include)
 - email, phoneNumber, organizationNumber (if provided)
+- Do NOT send isCustomer — it is readOnly and ignored
 - Do NOT include any address fields in the POST /customer body — they will be rejected with 422
 - To set address: after POST /customer succeeds, the response includes physicalAddress.id — then PUT /address/{id} with body: {"addressLine1": "...", "postalCode": "...", "city": "...", "country": {"id": 161}}
 - country id 161 = Norway (default if not specified)
 
 **Supplier** (POST /supplier):
 - name (required)
-- isSupplier: true (always include)
 - organizationNumber (if provided)
+- Do NOT send isSupplier — it is readOnly and ignored
 - email, phoneNumber (if provided)
 - Do NOT include address in POST body — set it via PUT /address/{id} after creation (same as customer)
 - IMPORTANT: use /supplier for "leverandør/lieferant/proveedor/fornecedor/supplier" — NEVER use /customer for a supplier
@@ -280,10 +294,44 @@ The correct approach is to create a new invoice for the fee — do NOT attempt a
 3. POST /order/orderline: {"order": {"id": <order_id>}, "description": "Purregebyr", "count": 1, "unitPriceExcludingVatCurrency": <amount>, "vatType": {"id": 3}}
 4. PUT /order/{id}/:invoice?invoiceDate=YYYY-MM-DD&invoiceDueDate=YYYY-MM-DD
 
+## How to register a supplier / incoming invoice (leverandørfaktura)
+
+**The correct endpoint is POST /incomingInvoice — NOT /supplierInvoice (that endpoint does not exist).**
+
+```json
+POST /incomingInvoice
+{
+  "invoiceHeader": {
+    "vendorId": <supplier_id>,
+    "invoiceDate": "YYYY-MM-DD",
+    "dueDate": "YYYY-MM-DD",
+    "invoiceAmount": <total_incl_vat>,
+    "invoiceNumber": "<vendor_invoice_number>",
+    "description": "..."
+  },
+  "orderLines": [
+    {
+      "row": 1,
+      "description": "...",
+      "accountId": <account_id>,
+      "amountInclVat": <amount_incl_vat>,
+      "vatTypeId": <vat_type_id>
+    }
+  ]
+}
+```
+Key rules:
+- vendorId = the supplier's id (from GET /supplier)
+- invoiceAmount = total including VAT
+- orderLines.amountInclVat = line amount including VAT
+- orderLines.row starts at 1 (NOT 0)
+- All ID fields are plain integers (not objects): vendorId, accountId, vatTypeId — NOT {"id": N}
+- Optional query param: ?sendTo=ledger to post directly to ledger (default goes to inbox)
+
 ## How to create a voucher (bilag) correctly
 
 POST /ledger/voucher body:
-```
+```json
 {
   "date": "YYYY-MM-DD",
   "description": "...",
@@ -292,17 +340,21 @@ POST /ledger/voucher body:
       "date": "YYYY-MM-DD",
       "description": "...",
       "account": {"id": <account_id>},
-      "amountGross": <amount>,
-      "amountGrossCurrency": <amount>
+      "amount": <amount>
     },
-    ... (balancing entry)
+    {
+      "date": "YYYY-MM-DD",
+      "description": "...",
+      "account": {"id": <account_id>},
+      "amount": <negative_amount>
+    }
   ]
 }
 ```
 Rules:
-- `amountGross` MUST equal `amountGrossCurrency` for NOK — they must be identical numbers
-- NEVER include a posting with guiRow=0 or row=0 — Tripletex auto-generates this row. Including it causes 422 "systemgenererte".
-- Every posting you include must have a non-zero row index — just omit the row field entirely and let Tripletex assign it
+- Use `amount` as the primary posting field — positive = debit, negative = credit
+- Omit `row` entirely — Tripletex assigns row numbers. Sending row=0 causes 422 "systemgenererte".
+- Postings must balance: sum of all amounts must equal 0
 - Postings must balance: debits equal credits (use positive for debit, negative for credit)
 - Typical accounts: 1500 = Accounts receivable, 3000 = Sales income, 8070 = Interest income, 7770 = Late fee income
 
@@ -310,29 +362,46 @@ Rules:
 
 **NEVER use /ledger/voucher to record salary — always use the salary API.**
 
-Step 1 — Create a salary transaction (the payroll run):
+**IMPORTANT: POST /salary/payslip does NOT exist as a standalone endpoint. Payslips must be embedded inside the POST /salary/transaction body.**
+
+Step 1 — Look up the salary type ID for monthly wage:
+GET /salary/type?number=100&fields=id,number,name
+- This returns the salary type for regular monthly salary (fastlønn), typically number=100
+- Note the `id` from the response — you need it in step 2
+
+Step 2 — Create the salary transaction with payslip embedded:
 POST /salary/transaction
-Body: {"date": "YYYY-MM-DD", "year": YYYY, "month": M}
+```json
+{
+  "date": "YYYY-MM-DD",
+  "year": YYYY,
+  "month": M,
+  "payslips": [
+    {
+      "employee": {"id": <emp_id>},
+      "specifications": [
+        {
+          "salaryType": {"id": <salary_type_id>},
+          "rate": <gross_salary>,
+          "count": 1,
+          "amount": <gross_salary>
+        }
+      ]
+    }
+  ]
+}
+```
 - date: last day of the salary month (e.g. "2024-01-31")
-- year: the 4-digit year as integer (e.g. 2024)
-- month: the month number as integer 1-12 (e.g. 1 for January)
-- All three fields are required — omitting year or month causes 422
+- year: 4-digit integer (e.g. 2024)
+- month: integer 1-12
+- salaryType.id: from the GET /salary/type lookup in step 1
+- rate and amount: the gross salary amount (same value)
 
-Step 2 — Create a payslip for the employee within that transaction:
-POST /salary/payslip
-Body: {"transaction": {"id": <tx_id>}, "employee": {"id": <emp_id>}}
-
-Step 3 — Add wage lines to the payslip:
-POST /salary/payslip/{payslip_id}/wageTransaction (or /salary/specification)
-Body: {"payslip": {"id": <payslip_id>}, "wageType": {"number": 100}, "amount": <gross_salary>}
-- Wage type number 100 = regular monthly salary (fastlønn). Use this by default.
-- amount = the gross salary amount (e.g. 44350)
-
-Step 4 — Execute the salary run:
+Step 3 — Execute the salary run:
 PUT /salary/transaction/{tx_id}/:execute
 
-If GET /salary/transaction returns 500, skip it and go straight to POST /salary/transaction — do not give up.
-If a specific step returns 500, try the next step rather than abandoning the salary flow.
+If GET /salary/transaction returns 500, skip it and go straight to POST — do not give up.
+If step 3 returns 500, it may still have been processed — check GET /salary/transaction before retrying.
 
 ## ABSOLUTE RULES — violations directly reduce your score
 
