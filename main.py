@@ -137,7 +137,7 @@ SYSTEM_PROMPT = """You are an expert accounting agent for Tripletex (Norwegian a
 ## Approach
 1. Plan minimum API calls needed — efficiency is scored
 2. Execute: make ALL independent calls in parallel; sequential only when dependent
-3. THINK before writing: list what you have vs. need to look up
+3. THINK before writing: list what you have vs. need to look up, trial-and-error directly hurts score, try to avoid this
 
 ## API Paths
 - Employees: GET/POST /employee, PUT /employee/{id}
@@ -496,8 +496,20 @@ async def run_agent(prompt: str, client: TripletexClient, attachments: list = No
                     put_path = path
                     put_body = tool_input["body"]
 
-                    # FIX 2: Auto-inject sendType=EMAIL on /:send if missing.
-                    # This error has appeared in every single log set — fix it unconditionally in code.
+                    # Pre-flight: /:invoice requires invoiceDate AND invoiceDueDate as query params.
+                    if "/:invoice" in put_path and "invoiceDate" not in put_path:
+                        logger.warning(f"PRE-FLIGHT BLOCK: /:invoice missing invoiceDate on {put_path}")
+                        return {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "is_error": True,
+                            "content": (
+                                "BLOCKED: PUT /:invoice requires BOTH ?invoiceDate=YYYY-MM-DD AND "
+                                "?invoiceDueDate=YYYY-MM-DD as query parameters. Add them and retry."
+                            ),
+                        }
+
+                    # Auto-inject sendType=EMAIL on /:send if missing.
                     if "/:send" in put_path and "sendType" not in put_path:
                         logger.warning(f"AUTO-INJECT: sendType=EMAIL added to {put_path}")
                         sep = "&" if "?" in put_path else "?"
